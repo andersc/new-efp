@@ -50,23 +50,23 @@ TEST_SUITE("Packet Loss") {
                 return;  // Drop the first packet
             }
             auto result = receiver.receive(data, size, 0);
-            CHECK(result == efp::Result::Ok);
+            CHECK(result == efp::Result::OK);
         });
 
         receiver.setCallback([&](efp::SuperFramePtr frame) {
-            CHECK(frame->streamId == 1);
-            CHECK(frame->pts == 1001);
-            CHECK(frame->payloadCode == 2);
-            CHECK(frame->broken);  // Must be marked as broken
+            CHECK(frame->mStreamId == 1);
+            CHECK(frame->mPts == 1001);
+            CHECK(frame->mPayloadCode == 2);
+            CHECK(frame->mBroken);  // Must be marked as broken
 
             // One block of MTU is gone, but size should still be correct
-            CHECK(frame->size == FRAME_SIZE);
+            CHECK(frame->mSize == FRAME_SIZE);
 
             // Verify remaining data starting from second fragment
             size_t type1PayloadSize = MTU - sizeof(efp::FrameType1);
             uint8_t vectorChecker = static_cast<uint8_t>(type1PayloadSize % 256);
-            for (size_t x = type1PayloadSize; x < frame->size; x++) {
-                CHECK(frame->data[x] == vectorChecker++);
+            for (size_t x = type1PayloadSize; x < frame->mSize; x++) {
+                CHECK(frame->mpData[x] == vectorChecker++);
             }
             dataReceived = true;
         });
@@ -75,7 +75,7 @@ TEST_SUITE("Packet Loss") {
         std::generate(mydata.begin(), mydata.end(), [n = 0]() mutable { return static_cast<uint8_t>(n++); });
 
         auto result = sender.send(mydata, 0x02, 1001, 1, 2, 1);
-        CHECK(result == efp::Result::Ok);
+        CHECK(result == efp::Result::OK);
 
         REQUIRE(waitFor([&]() { return dataReceived.load(); }));
     }
@@ -92,28 +92,28 @@ TEST_SUITE("Packet Loss") {
         std::atomic<bool> dataReceived{false};
 
         sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-            if ((data[0] & 0x0f) == static_cast<uint8_t>(efp::FrameType::Type2)) {
+            if ((data[0] & 0x0f) == static_cast<uint8_t>(efp::FrameType::TYPE2)) {
                 return;  // Drop the Type2 packet
             }
             auto result = receiver.receive(data, size, 0);
-            CHECK(result == efp::Result::Ok);
+            CHECK(result == efp::Result::OK);
         });
 
         receiver.setCallback([&](efp::SuperFramePtr frame) {
-            CHECK(frame->streamId == 1);
-            CHECK(frame->pts == UINT64_MAX);  // No PTS without Type2
-            CHECK(frame->payloadCode == UINT32_MAX);  // No code without Type2
-            CHECK(frame->broken);  // Must be marked as broken
+            CHECK(frame->mStreamId == 1);
+            CHECK(frame->mPts == UINT64_MAX);  // No PTS without Type2
+            CHECK(frame->mPayloadCode == UINT32_MAX);  // No code without Type2
+            CHECK(frame->mBroken);  // Must be marked as broken
 
             // When Type2 is dropped, the receiver allocates based on ofFragmentNo + 1 fragments
             // of type1PayloadSize each (since it doesn't know Type2's actual size)
             size_t type1PayloadSize = MTU - sizeof(efp::FrameType1);
-            CHECK(frame->size == type1PayloadSize * 6);  // 6 fragments allocated (0-5), each type1PayloadSize
+            CHECK(frame->mSize == type1PayloadSize * 6);  // 6 fragments allocated (0-5), each type1PayloadSize
 
             // Verify data from Type1 fragments (first 5 * type1PayloadSize bytes are valid)
             uint8_t vectorChecker = 0;
             for (size_t x = 0; x < type1PayloadSize * 5; x++) {
-                CHECK(frame->data[x] == vectorChecker++);
+                CHECK(frame->mpData[x] == vectorChecker++);
             }
             dataReceived = true;
         });
@@ -122,7 +122,7 @@ TEST_SUITE("Packet Loss") {
         std::generate(mydata.begin(), mydata.end(), [n = 0]() mutable { return static_cast<uint8_t>(n++); });
 
         auto result = sender.send(mydata, 0x02, 1001, 1, 2, 1);
-        CHECK(result == efp::Result::Ok);
+        CHECK(result == efp::Result::OK);
 
         REQUIRE(waitFor([&]() { return dataReceived.load(); }));
     }
@@ -134,7 +134,7 @@ TEST_SUITE("Packet Loss") {
         const size_t FRAME_SIZE = ((MTU - sizeof(efp::FrameType1)) * 5) + 12;
 
         efp::Sender sender(MTU);
-        efp::Receiver receiver(20, 20, efp::ReceiverMode::RunToCompletion);
+        efp::Receiver receiver(20, 20, efp::ReceiverMode::RUN_TO_COMPLETION);
 
         std::atomic<size_t> dataReceived{0};
 
@@ -157,14 +157,14 @@ TEST_SUITE("Packet Loss") {
             }
 
             auto result = receiver.receive(packet.data(), packet.size(), 0);
-            CHECK(result == efp::Result::Ok);
+            CHECK(result == efp::Result::OK);
 
             if (sentFragmentNumber == 18) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
                 receiver.poll();  // Trigger timeout
                 // Send saved fragment - it may be Ok or FragmentTooOld depending on timing
                 result = receiver.receive(savedFragment.data(), savedFragment.size(), 0);
-                CHECK((result == efp::Result::Ok || result == efp::Result::FragmentTooOld));
+                CHECK((result == efp::Result::OK || result == efp::Result::FRAGMENT_TOO_OLD));
                 return;
             }
 
@@ -172,20 +172,20 @@ TEST_SUITE("Packet Loss") {
                 // Send saved old fragment again
                 result = receiver.receive(savedFragment.data(), savedFragment.size(), 0);
                 // The fragment is too old, should be signaled as such
-                CHECK(result == efp::Result::FragmentTooOld);
+                CHECK(result == efp::Result::FRAGMENT_TOO_OLD);
                 return;
             }
         });
 
         receiver.setCallback([&](efp::SuperFramePtr frame) {
-            if (frame->pts == 1002) {
-                CHECK(frame->broken);  // Frame 2 should be broken
+            if (frame->mPts == 1002) {
+                CHECK(frame->mBroken);  // Frame 2 should be broken
             } else {
-                CHECK(!frame->broken);
+                CHECK(!frame->mBroken);
 
                 uint8_t vectorChecker = 0;
                 for (size_t x = 0; x < FRAME_SIZE; x++) {
-                    CHECK(frame->data[x] == vectorChecker++);
+                    CHECK(frame->mpData[x] == vectorChecker++);
                 }
             }
             dataReceived++;
@@ -196,7 +196,7 @@ TEST_SUITE("Packet Loss") {
 
         for (size_t packetNumber = 0; packetNumber < 4; packetNumber++) {
             auto result = sender.send(mydata, 0x83, packetNumber + 1001, packetNumber + 1, 0, 1);
-            REQUIRE(result == efp::Result::Ok);
+            REQUIRE(result == efp::Result::OK);
         }
 
         // Final poll to ensure all frames are delivered
@@ -280,10 +280,10 @@ TEST_SUITE("Packet Loss") {
             }
 
             if (currentReorder) {
-                if ((data[0] & 0x0f) == static_cast<uint8_t>(efp::FrameType::Type1)) {
+                if ((data[0] & 0x0f) == static_cast<uint8_t>(efp::FrameType::TYPE1)) {
                     reorderBuffer.push_back(packet);
                     return;
-                } else if ((data[0] & 0x0f) == static_cast<uint8_t>(efp::FrameType::Type2)) {
+                } else if ((data[0] & 0x0f) == static_cast<uint8_t>(efp::FrameType::TYPE2)) {
                     reorderBuffer.push_back(packet);
                     std::shuffle(reorderBuffer.begin(), reorderBuffer.end(), gen);
                     for (auto& p : reorderBuffer) {
@@ -291,7 +291,7 @@ TEST_SUITE("Packet Loss") {
                     }
                     reorderBuffer.clear();
                     return;
-                } else if ((data[0] & 0x0f) == static_cast<uint8_t>(efp::FrameType::Type3)) {
+                } else if ((data[0] & 0x0f) == static_cast<uint8_t>(efp::FrameType::TYPE3)) {
                     reorderBuffer.push_back(packet);
                     return;
                 }
@@ -302,7 +302,7 @@ TEST_SUITE("Packet Loss") {
 
         receiver.setCallback([&](efp::SuperFramePtr frame) {
             totalReceived++;
-            if (frame->broken) {
+            if (frame->mBroken) {
                 brokenReceived++;
             }
         });
@@ -354,14 +354,14 @@ TEST_SUITE("Packet Loss") {
         });
 
         receiver.setCallback([&](efp::SuperFramePtr frame) {
-            CHECK(frame->broken);  // Must be broken due to missing fragments
+            CHECK(frame->mBroken);  // Must be broken due to missing fragments
             dataReceived = true;
         });
 
         std::vector<uint8_t> mydata(FRAME_SIZE);
 
         auto result = sender.send(mydata, 0x01, 1000, 1000, 0, 1);
-        CHECK(result == efp::Result::Ok);
+        CHECK(result == efp::Result::OK);
 
         REQUIRE(waitFor([&]() { return dataReceived.load(); }));
     }
@@ -379,21 +379,21 @@ TEST_SUITE("Packet Loss") {
 
         sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
             // Only send Type2
-            if ((data[0] & 0x0f) == static_cast<uint8_t>(efp::FrameType::Type2)) {
+            if ((data[0] & 0x0f) == static_cast<uint8_t>(efp::FrameType::TYPE2)) {
                 receiver.receive(data, size, 0);
             }
         });
 
         receiver.setCallback([&](efp::SuperFramePtr frame) {
-            CHECK(frame->broken);  // Must be broken - missing all Type1
-            CHECK(frame->pts == 1000);  // Type2 carries metadata
+            CHECK(frame->mBroken);  // Must be broken - missing all Type1
+            CHECK(frame->mPts == 1000);  // Type2 carries metadata
             dataReceived = true;
         });
 
         std::vector<uint8_t> mydata(FRAME_SIZE);
 
         auto result = sender.send(mydata, 0x01, 1000, 1000, 0, 1);
-        CHECK(result == efp::Result::Ok);
+        CHECK(result == efp::Result::OK);
 
         REQUIRE(waitFor([&]() { return dataReceived.load(); }));
     }
@@ -408,7 +408,7 @@ TEST_SUITE("Packet Loss") {
         std::atomic<bool> received{false};
 
         receiver.setCallback([&](efp::SuperFramePtr frame) {
-            CHECK(!frame->broken);
+            CHECK(!frame->mBroken);
             received = true;
         });
 
@@ -424,10 +424,10 @@ TEST_SUITE("Packet Loss") {
         // Send each fragment twice
         for (auto& frag : fragments) {
             auto result1 = receiver.receive(frag.data(), frag.size(), 0);
-            CHECK(result1 == efp::Result::Ok);
+            CHECK(result1 == efp::Result::OK);
 
             auto result2 = receiver.receive(frag.data(), frag.size(), 0);
-            CHECK(result2 == efp::Result::DuplicateFragment);
+            CHECK(result2 == efp::Result::DUPLICATE_FRAGMENT);
         }
 
         REQUIRE(waitFor([&]() { return received.load(); }));
@@ -443,7 +443,7 @@ TEST_SUITE("Packet Loss") {
         std::atomic<bool> received{false};
 
         receiver.setCallback([&](efp::SuperFramePtr frame) {
-            CHECK(frame->broken);
+            CHECK(frame->mBroken);
             received = true;
         });
 
@@ -492,7 +492,7 @@ TEST_SUITE("Packet Loss") {
         // Now send remaining fragments - should be rejected as too old
         for (size_t i = 1; i < fragments.size(); i++) {
             auto result = receiver.receive(fragments[i].data(), fragments[i].size(), 0);
-            CHECK(result == efp::Result::FragmentTooOld);
+            CHECK(result == efp::Result::FRAGMENT_TOO_OLD);
         }
     }
 

@@ -31,7 +31,7 @@ namespace efp {
 // Version info
 constexpr uint8_t  VERSION_MAJOR = 1;
 constexpr uint8_t  VERSION_MINOR = 0;
-constexpr uint16_t VERSION = (static_cast<uint16_t>(VERSION_MAJOR) << 8) | VERSION_MINOR;
+constexpr uint16_t VERSION = ((uint16_t)(VERSION_MAJOR) << 8) | VERSION_MINOR;
 
 // Default circular buffer size (must be 2^n - 1 for bitmask operations)
 constexpr uint16_t DEFAULT_BUFFER_SIZE = 8191;
@@ -39,30 +39,30 @@ constexpr uint16_t DEFAULT_BUFFER_SIZE = 8191;
 // Result codes
 enum class Result : int16_t {
     // Errors (negative)
-    MemoryAllocationError    = -10,
-    BufferOutOfBounds        = -9,
-    BufferOutOfResources     = -8,
-    FrameSizeMismatch        = -7,
-    TooLargeFrame            = -6,
-    TooLargeEmbeddedData     = -5,
-    InvalidParameter         = -4,
-    ReceiverNotRunning       = -3,
-    InternalError            = -2,
-    NotImplemented           = -1,
+    MEMORY_ALLOCATION_ERROR  = -10,
+    BUFFER_OUT_OF_BOUNDS     = -9,
+    BUFFER_OUT_OF_RESOURCES  = -8,
+    FRAME_SIZE_MISMATCH      = -7,
+    TOO_LARGE_FRAME          = -6,
+    TOO_LARGE_EMBEDDED_DATA  = -5,
+    INVALID_PARAMETER        = -4,
+    RECEIVER_NOT_RUNNING     = -3,
+    INTERNAL_ERROR           = -2,
+    NOT_IMPLEMENTED          = -1,
 
     // Success
-    Ok                       = 0,
+    OK                       = 0,
 
     // Informational (positive)
-    DuplicateFragment        = 1,
-    FragmentTooOld           = 2,
-    FrameTimeout             = 3,
+    DUPLICATE_FRAGMENT       = 1,
+    FRAGMENT_TOO_OLD         = 2,
+    FRAME_TIMEOUT            = 3,
 };
 
 // Receiver operating modes
 enum class ReceiverMode : uint8_t {
-    Threaded        = 1,  // Background threads handle assembly and delivery
-    RunToCompletion = 2   // Caller-driven, no internal threads
+    THREADED         = 1,  // Background threads handle assembly and delivery
+    RUN_TO_COMPLETION = 2   // Caller-driven, no internal threads
 };
 
 //------------------------------------------------------------------------------
@@ -70,43 +70,43 @@ enum class ReceiverMode : uint8_t {
 //------------------------------------------------------------------------------
 class SuperFrame {
 public:
-    uint8_t* data         = nullptr;       // Pointer to frame data (32-byte aligned)
-    size_t   size         = 0;             // Frame size in bytes
-    uint8_t  payloadType  = 0;             // User-defined payload type
-    uint32_t payloadCode  = UINT32_MAX;    // User-defined payload code
-    uint64_t pts          = UINT64_MAX;    // Presentation timestamp
-    uint64_t dts          = UINT64_MAX;    // Decode timestamp
-    uint8_t  streamId     = 0;             // Stream identifier
-    uint8_t  sourceId     = 0;             // Source identifier (passed through)
-    uint8_t  flags        = 0;             // Flags from the frame
-    uint16_t superFrameNo = 0;             // Sequence number
-    bool     broken       = true;          // True if frame is incomplete
+    uint8_t* mpData        = nullptr;       // Pointer to frame data (32-byte aligned)
+    size_t   mSize         = 0;             // Frame size in bytes
+    uint8_t  mPayloadType  = 0;             // User-defined payload type
+    uint32_t mPayloadCode  = UINT32_MAX;    // User-defined payload code
+    uint64_t mPts          = UINT64_MAX;    // Presentation timestamp
+    uint64_t mDts          = UINT64_MAX;    // Decode timestamp
+    uint8_t  mStreamId     = 0;             // Stream identifier
+    uint8_t  mSourceId     = 0;             // Source identifier (passed through)
+    uint8_t  mFlags        = 0;             // Flags from the frame
+    uint16_t mSuperFrameNo = 0;             // Sequence number
+    bool     mBroken       = true;          // True if frame is incomplete
 
     SuperFrame() = default;
     SuperFrame(const SuperFrame&) = delete;
     SuperFrame& operator=(const SuperFrame&) = delete;
 
-    explicit SuperFrame(size_t allocSize) {
-        if (allocSize > 0) {
+    explicit SuperFrame(size_t aAllocSize) {
+        if (aAllocSize > 0) {
 #ifdef _WIN64
-            data = static_cast<uint8_t*>(_aligned_malloc(allocSize, 32));
+            mpData = (uint8_t*)(_aligned_malloc(aAllocSize, 32));
 #else
-            if (posix_memalign(reinterpret_cast<void**>(&data), 32, allocSize) != 0) {
-                data = nullptr;
+            if (posix_memalign((void**)(&mpData), 32, aAllocSize) != 0) {
+                mpData = nullptr;
             }
 #endif
-            if (data) {
-                size = allocSize;
+            if (mpData) {
+                mSize = aAllocSize;
             }
         }
     }
 
     ~SuperFrame() {
-        if (data) {
+        if (mpData) {
 #ifdef _WIN64
-            _aligned_free(data);
+            _aligned_free(mpData);
 #else
-            free(data);
+            free(mpData);
 #endif
         }
     }
@@ -117,25 +117,25 @@ using SuperFramePtr = std::unique_ptr<SuperFrame>;
 //------------------------------------------------------------------------------
 // SendCallback: Called for each fragment to be transmitted
 //------------------------------------------------------------------------------
-using SendCallback = std::function<void(const uint8_t* data, size_t size, uint8_t streamId)>;
+using SendCallback = std::function<void(const uint8_t* apData, size_t aSize, uint8_t aStreamId)>;
 
 //------------------------------------------------------------------------------
 // ReceiveCallback: Called when a SuperFrame is assembled (or times out)
 //------------------------------------------------------------------------------
-using ReceiveCallback = std::function<void(SuperFramePtr frame)>;
+using ReceiveCallback = std::function<void(SuperFramePtr apFrame)>;
 
 //------------------------------------------------------------------------------
 // Sender: Fragments data into EFP packets
 //------------------------------------------------------------------------------
-template<uint16_t BufferSize = DEFAULT_BUFFER_SIZE>
+template<uint16_t BUFFER_SIZE = DEFAULT_BUFFER_SIZE>
 class Sender {
-    static_assert((BufferSize & (BufferSize + 1)) == 0,
-                  "BufferSize must be 2^n - 1 for bitmask operations");
+    static_assert((BUFFER_SIZE & (BUFFER_SIZE + 1)) == 0,
+                  "BUFFER_SIZE must be 2^n - 1 for bitmask operations");
 
 public:
-    explicit Sender(uint16_t mtu) : mtu_(mtu) {
-        if (mtu_ < 256) mtu_ = 256;
-        sendBuffer_.resize(mtu_);
+    explicit Sender(uint16_t aMtu) : mMtu(aMtu) {
+        if (mMtu < 256) mMtu = 256;
+        mSendBuffer.resize(mMtu);
     }
 
     ~Sender() = default;
@@ -150,218 +150,218 @@ public:
     static uint16_t version() { return VERSION; }
 
     // Set send callback
-    void setCallback(SendCallback callback) {
-        callback_ = std::move(callback);
+    void setCallback(SendCallback aCallback) {
+        mCallback = std::move(aCallback);
     }
 
     // Pack and send data
-    Result send(const uint8_t* data, size_t size,
-                uint8_t payloadType, uint64_t pts, uint64_t dts,
-                uint32_t payloadCode, uint8_t streamId, uint8_t flags = Flags::None) {
+    Result send(const uint8_t* apData, size_t aSize,
+                uint8_t aPayloadType, uint64_t aPts, uint64_t aDts,
+                uint32_t aPayloadCode, uint8_t aStreamId, uint8_t aFlags = Flags::NONE) {
 
-        if (!data || size == 0) {
-            return Result::InvalidParameter;
+        if (!apData || aSize == 0) {
+            return Result::INVALID_PARAMETER;
         }
 
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<std::mutex> lLock(mMutex);
 
-        const size_t type1PayloadSize = mtu_ - sizeof(FrameType1);
-        const size_t type2PayloadSize = mtu_ - sizeof(FrameType2);
+        auto lType1PayloadSize = mMtu - sizeof(FrameType1);
+        auto lType2PayloadSize = mMtu - sizeof(FrameType2);
 
         // Calculate DTS-PTS difference
-        uint32_t dtsPtsDiff = UINT32_MAX;
-        if (dts != UINT64_MAX && pts != UINT64_MAX && pts >= dts) {
-            uint64_t diff = pts - dts;
-            if (diff <= UINT32_MAX - 1) {
-                dtsPtsDiff = static_cast<uint32_t>(diff);
+        auto lDtsPtsDiff = UINT32_MAX;
+        if (aDts != UINT64_MAX && aPts != UINT64_MAX && aPts >= aDts) {
+            auto lDiff = aPts - aDts;
+            if (lDiff <= UINT32_MAX - 1) {
+                lDtsPtsDiff = (uint32_t)(lDiff);
             }
         }
 
         // Single small frame? Use Type2 only
-        if (size <= type2PayloadSize) {
-            return sendType2Only(data, size, payloadType, pts, dtsPtsDiff,
-                                 payloadCode, streamId, flags);
+        if (aSize <= lType2PayloadSize) {
+            return sendType2Only(apData, aSize, aPayloadType, aPts, lDtsPtsDiff,
+                                 aPayloadCode, aStreamId, aFlags);
         }
 
         // Multiple fragments needed
-        return sendFragmented(data, size, payloadType, pts, dtsPtsDiff,
-                              payloadCode, streamId, flags, type1PayloadSize);
+        return sendFragmented(apData, aSize, aPayloadType, aPts, lDtsPtsDiff,
+                              aPayloadCode, aStreamId, aFlags, lType1PayloadSize);
     }
 
     // Convenience overload for vector
-    Result send(const std::vector<uint8_t>& data,
-                uint8_t payloadType, uint64_t pts, uint64_t dts,
-                uint32_t payloadCode, uint8_t streamId, uint8_t flags = Flags::None) {
-        return send(data.data(), data.size(), payloadType, pts, dts,
-                    payloadCode, streamId, flags);
+    Result send(const std::vector<uint8_t>& aData,
+                uint8_t aPayloadType, uint64_t aPts, uint64_t aDts,
+                uint32_t aPayloadCode, uint8_t aStreamId, uint8_t aFlags = Flags::NONE) {
+        return send(aData.data(), aData.size(), aPayloadType, aPts, aDts,
+                    aPayloadCode, aStreamId, aFlags);
     }
 
 private:
-    Result sendType2Only(const uint8_t* data, size_t size,
-                         uint8_t payloadType, uint64_t pts, uint32_t dtsPtsDiff,
-                         uint32_t payloadCode, uint8_t streamId, uint8_t flags) {
+    Result sendType2Only(const uint8_t* apData, size_t aSize,
+                         uint8_t aPayloadType, uint64_t aPts, uint32_t aDtsPtsDiff,
+                         uint32_t aPayloadCode, uint8_t aStreamId, uint8_t aFlags) {
 
-        FrameType2 header;
-        header.frameType = makeFrameTypeByte(FrameType::Type2, flags);
-        header.streamId = streamId;
-        header.payloadType = payloadType;
-        header.sizeOfData = static_cast<uint16_t>(size);
-        header.superFrameNo = superFrameNo_++;
-        header.ofFragmentNo = 0;
-        header.type1PacketSize = 0;
-        header.pts = pts;
-        header.dtsPtsDiff = dtsPtsDiff;
-        header.payloadCode = payloadCode;
+        FrameType2 lHeader;
+        lHeader.mFrameType = makeFrameTypeByte(FrameType::TYPE2, aFlags);
+        lHeader.mStreamId = aStreamId;
+        lHeader.mPayloadType = aPayloadType;
+        lHeader.mSizeOfData = (uint16_t)(aSize);
+        lHeader.mSuperFrameNo = mSuperFrameNo++;
+        lHeader.mOfFragmentNo = 0;
+        lHeader.mType1PacketSize = 0;
+        lHeader.mPts = aPts;
+        lHeader.mDtsPtsDiff = aDtsPtsDiff;
+        lHeader.mPayloadCode = aPayloadCode;
 
-        std::memcpy(sendBuffer_.data(), &header, sizeof(header));
-        std::memcpy(sendBuffer_.data() + sizeof(header), data, size);
+        std::memcpy(mSendBuffer.data(), &lHeader, sizeof(lHeader));
+        std::memcpy(mSendBuffer.data() + sizeof(lHeader), apData, aSize);
 
-        if (callback_) {
-            callback_(sendBuffer_.data(), sizeof(header) + size, streamId);
+        if (mCallback) {
+            mCallback(mSendBuffer.data(), sizeof(lHeader) + aSize, aStreamId);
         }
 
-        return Result::Ok;
+        return Result::OK;
     }
 
-    Result sendFragmented(const uint8_t* data, size_t size,
-                          uint8_t payloadType, uint64_t pts, uint32_t dtsPtsDiff,
-                          uint32_t payloadCode, uint8_t streamId, uint8_t flags,
-                          size_t type1PayloadSize) {
+    Result sendFragmented(const uint8_t* apData, size_t aSize,
+                          uint8_t aPayloadType, uint64_t aPts, uint32_t aDtsPtsDiff,
+                          uint32_t aPayloadCode, uint8_t aStreamId, uint8_t aFlags,
+                          size_t aType1PayloadSize) {
 
-        const size_t type2HeaderSize = sizeof(FrameType2);
-        const size_t type3HeaderSize = sizeof(FrameType3);
+        auto lType2HeaderSize = sizeof(FrameType2);
+        auto lType3HeaderSize = sizeof(FrameType3);
 
         // Calculate fragment count
         // Last fragment uses Type2, may need Type3 for penultimate
-        size_t remainingAfterType1s = size % type1PayloadSize;
-        size_t numType1Fragments = size / type1PayloadSize;
+        auto lRemainingAfterType1s = aSize % aType1PayloadSize;
+        auto lNumType1Fragments = aSize / aType1PayloadSize;
 
-        uint16_t totalFragments;
-        bool needsType3 = false;
-        size_t type2DataSize;
-        size_t type3DataSize = 0;
+        uint16_t lTotalFragments;
+        auto lNeedsType3 = false;
+        size_t lType2DataSize;
+        size_t lType3DataSize = 0;
 
-        if (remainingAfterType1s == 0) {
+        if (lRemainingAfterType1s == 0) {
             // Perfect fit into Type1s, last one becomes Type2 with full payload
-            totalFragments = static_cast<uint16_t>(numType1Fragments);
-            type2DataSize = type1PayloadSize;
-            numType1Fragments--;
-        } else if (remainingAfterType1s <= (mtu_ - type2HeaderSize)) {
+            lTotalFragments = (uint16_t)(lNumType1Fragments);
+            lType2DataSize = aType1PayloadSize;
+            lNumType1Fragments--;
+        } else if (lRemainingAfterType1s <= (mMtu - lType2HeaderSize)) {
             // Remainder fits in Type2
-            totalFragments = static_cast<uint16_t>(numType1Fragments + 1);
-            type2DataSize = remainingAfterType1s;
+            lTotalFragments = (uint16_t)(lNumType1Fragments + 1);
+            lType2DataSize = lRemainingAfterType1s;
         } else {
             // Need Type3 for overflow
-            needsType3 = true;
-            totalFragments = static_cast<uint16_t>(numType1Fragments + 2);
-            type3DataSize = type1PayloadSize;  // Type3 carries full fragment
-            type2DataSize = remainingAfterType1s - type1PayloadSize + (mtu_ - type2HeaderSize);
+            lNeedsType3 = true;
+            lTotalFragments = (uint16_t)(lNumType1Fragments + 2);
+            lType3DataSize = aType1PayloadSize;  // Type3 carries full fragment
+            lType2DataSize = lRemainingAfterType1s - aType1PayloadSize + (mMtu - lType2HeaderSize);
             // Recalculate: remaining split between Type3 and Type2
-            size_t combinedSpace = type1PayloadSize + (mtu_ - type2HeaderSize);
-            if (remainingAfterType1s <= combinedSpace) {
-                type3DataSize = remainingAfterType1s - (mtu_ - type2HeaderSize);
-                if (type3DataSize > type1PayloadSize) {
-                    type3DataSize = type1PayloadSize;
+            auto lCombinedSpace = aType1PayloadSize + (mMtu - lType2HeaderSize);
+            if (lRemainingAfterType1s <= lCombinedSpace) {
+                lType3DataSize = lRemainingAfterType1s - (mMtu - lType2HeaderSize);
+                if (lType3DataSize > aType1PayloadSize) {
+                    lType3DataSize = aType1PayloadSize;
                 }
-                type2DataSize = remainingAfterType1s - type3DataSize;
+                lType2DataSize = lRemainingAfterType1s - lType3DataSize;
             }
         }
 
-        uint16_t superFrameNo = superFrameNo_++;
-        uint16_t ofFragmentNo = totalFragments - 1;
-        size_t dataOffset = 0;
+        auto lSuperFrameNo = mSuperFrameNo++;
+        auto lOfFragmentNo = (uint16_t)(lTotalFragments - 1);
+        size_t lDataOffset = 0;
 
         // Send Type1 fragments
-        for (uint16_t fragNo = 0; fragNo < numType1Fragments; fragNo++) {
-            FrameType1 header;
-            header.frameType = makeFrameTypeByte(FrameType::Type1, flags);
-            header.streamId = streamId;
-            header.superFrameNo = superFrameNo;
-            header.fragmentNo = fragNo;
-            header.ofFragmentNo = ofFragmentNo;
+        for (uint16_t lFragNo = 0; lFragNo < lNumType1Fragments; lFragNo++) {
+            FrameType1 lHeader;
+            lHeader.mFrameType = makeFrameTypeByte(FrameType::TYPE1, aFlags);
+            lHeader.mStreamId = aStreamId;
+            lHeader.mSuperFrameNo = lSuperFrameNo;
+            lHeader.mFragmentNo = lFragNo;
+            lHeader.mOfFragmentNo = lOfFragmentNo;
 
-            std::memcpy(sendBuffer_.data(), &header, sizeof(header));
-            std::memcpy(sendBuffer_.data() + sizeof(header), data + dataOffset, type1PayloadSize);
-            dataOffset += type1PayloadSize;
+            std::memcpy(mSendBuffer.data(), &lHeader, sizeof(lHeader));
+            std::memcpy(mSendBuffer.data() + sizeof(lHeader), apData + lDataOffset, aType1PayloadSize);
+            lDataOffset += aType1PayloadSize;
 
-            if (callback_) {
-                callback_(sendBuffer_.data(), mtu_, streamId);
+            if (mCallback) {
+                mCallback(mSendBuffer.data(), mMtu, aStreamId);
             }
         }
 
         // Send Type3 if needed (penultimate fragment)
-        if (needsType3) {
-            FrameType3 header;
-            header.frameType = makeFrameTypeByte(FrameType::Type3, flags);
-            header.streamId = streamId;
-            header.superFrameNo = superFrameNo;
-            header.type1PacketSize = static_cast<uint16_t>(type1PayloadSize);
-            header.ofFragmentNo = ofFragmentNo;
+        if (lNeedsType3) {
+            FrameType3 lHeader;
+            lHeader.mFrameType = makeFrameTypeByte(FrameType::TYPE3, aFlags);
+            lHeader.mStreamId = aStreamId;
+            lHeader.mSuperFrameNo = lSuperFrameNo;
+            lHeader.mType1PacketSize = (uint16_t)(aType1PayloadSize);
+            lHeader.mOfFragmentNo = lOfFragmentNo;
 
-            std::memcpy(sendBuffer_.data(), &header, sizeof(header));
-            std::memcpy(sendBuffer_.data() + sizeof(header), data + dataOffset, type3DataSize);
-            dataOffset += type3DataSize;
+            std::memcpy(mSendBuffer.data(), &lHeader, sizeof(lHeader));
+            std::memcpy(mSendBuffer.data() + sizeof(lHeader), apData + lDataOffset, lType3DataSize);
+            lDataOffset += lType3DataSize;
 
-            if (callback_) {
-                callback_(sendBuffer_.data(), sizeof(header) + type3DataSize, streamId);
+            if (mCallback) {
+                mCallback(mSendBuffer.data(), sizeof(lHeader) + lType3DataSize, aStreamId);
             }
         }
 
         // Send Type2 (final fragment)
-        FrameType2 header;
-        header.frameType = makeFrameTypeByte(FrameType::Type2, flags);
-        header.streamId = streamId;
-        header.payloadType = payloadType;
-        header.sizeOfData = static_cast<uint16_t>(type2DataSize);
-        header.superFrameNo = superFrameNo;
-        header.ofFragmentNo = ofFragmentNo;
-        header.type1PacketSize = static_cast<uint16_t>(type1PayloadSize);
-        header.pts = pts;
-        header.dtsPtsDiff = dtsPtsDiff;
-        header.payloadCode = payloadCode;
+        FrameType2 lHeader;
+        lHeader.mFrameType = makeFrameTypeByte(FrameType::TYPE2, aFlags);
+        lHeader.mStreamId = aStreamId;
+        lHeader.mPayloadType = aPayloadType;
+        lHeader.mSizeOfData = (uint16_t)(lType2DataSize);
+        lHeader.mSuperFrameNo = lSuperFrameNo;
+        lHeader.mOfFragmentNo = lOfFragmentNo;
+        lHeader.mType1PacketSize = (uint16_t)(aType1PayloadSize);
+        lHeader.mPts = aPts;
+        lHeader.mDtsPtsDiff = aDtsPtsDiff;
+        lHeader.mPayloadCode = aPayloadCode;
 
-        std::memcpy(sendBuffer_.data(), &header, sizeof(header));
-        std::memcpy(sendBuffer_.data() + sizeof(header), data + dataOffset, type2DataSize);
+        std::memcpy(mSendBuffer.data(), &lHeader, sizeof(lHeader));
+        std::memcpy(mSendBuffer.data() + sizeof(lHeader), apData + lDataOffset, lType2DataSize);
 
-        if (callback_) {
-            callback_(sendBuffer_.data(), sizeof(header) + type2DataSize, streamId);
+        if (mCallback) {
+            mCallback(mSendBuffer.data(), sizeof(lHeader) + lType2DataSize, aStreamId);
         }
 
-        return Result::Ok;
+        return Result::OK;
     }
 
-    uint16_t mtu_;
-    uint16_t superFrameNo_ = 0;
-    std::mutex mutex_;
-    std::vector<uint8_t> sendBuffer_;
-    SendCallback callback_;
+    uint16_t mMtu;
+    uint16_t mSuperFrameNo = 0;
+    std::mutex mMutex;
+    std::vector<uint8_t> mSendBuffer;
+    SendCallback mCallback;
 };
 
 //------------------------------------------------------------------------------
 // Receiver: Reassembles EFP fragments into SuperFrames
 //------------------------------------------------------------------------------
-template<uint16_t BufferSize = DEFAULT_BUFFER_SIZE>
+template<uint16_t BUFFER_SIZE = DEFAULT_BUFFER_SIZE>
 class Receiver {
-    static_assert((BufferSize & (BufferSize + 1)) == 0,
-                  "BufferSize must be 2^n - 1 for bitmask operations");
+    static_assert((BUFFER_SIZE & (BUFFER_SIZE + 1)) == 0,
+                  "BUFFER_SIZE must be 2^n - 1 for bitmask operations");
 
 public:
-    explicit Receiver(uint32_t timeoutMs = 100, uint32_t holTimeoutMs = 0,
-                      ReceiverMode mode = ReceiverMode::Threaded)
-        : timeoutMs_(timeoutMs), holTimeoutMs_(holTimeoutMs), mode_(mode) {
+    explicit Receiver(uint32_t aTimeoutMs = 100, uint32_t aHolTimeoutMs = 0,
+                      ReceiverMode aMode = ReceiverMode::THREADED)
+        : mTimeoutMs(aTimeoutMs), mHolTimeoutMs(aHolTimeoutMs), mMode(aMode) {
 
-        buckets_ = new Bucket[BufferSize + 1];
+        mpBuckets = new Bucket[BUFFER_SIZE + 1];
 
-        if (mode_ == ReceiverMode::Threaded) {
-            running_ = true;
-            workerThread_ = std::thread(&Receiver::workerLoop, this);
-            deliveryThread_ = std::thread(&Receiver::deliveryLoop, this);
+        if (mMode == ReceiverMode::THREADED) {
+            mRunning = true;
+            mWorkerThread = std::thread(&Receiver::workerLoop, this);
+            mDeliveryThread = std::thread(&Receiver::deliveryLoop, this);
         }
     }
 
     ~Receiver() {
         stop();
-        delete[] buckets_;
+        delete[] mpBuckets;
     }
 
     // Non-copyable, non-movable
@@ -374,100 +374,100 @@ public:
     static uint16_t version() { return VERSION; }
 
     // Set receive callback
-    void setCallback(ReceiveCallback callback) {
-        callback_ = std::move(callback);
+    void setCallback(ReceiveCallback aCallback) {
+        mCallback = std::move(aCallback);
     }
 
     // Receive a fragment
-    Result receive(const uint8_t* data, size_t size, uint8_t sourceId = 0) {
-        if (!data || size == 0) {
-            return Result::InvalidParameter;
+    Result receive(const uint8_t* apData, size_t aSize, uint8_t aSourceId = 0) {
+        if (!apData || aSize == 0) {
+            return Result::INVALID_PARAMETER;
         }
 
-        FrameType type = getFrameType(data[0]);
-        Result result;
+        auto lType = getFrameType(apData[0]);
+        Result lResult;
 
-        switch (type) {
-            case FrameType::Type0:
-                result = handleType0(data, size, sourceId);
+        switch (lType) {
+            case FrameType::TYPE0:
+                lResult = handleType0(apData, aSize, aSourceId);
                 break;
-            case FrameType::Type1:
-                result = handleType1(data, size, sourceId);
+            case FrameType::TYPE1:
+                lResult = handleType1(apData, aSize, aSourceId);
                 break;
-            case FrameType::Type2:
-                result = handleType2(data, size, sourceId);
+            case FrameType::TYPE2:
+                lResult = handleType2(apData, aSize, aSourceId);
                 break;
-            case FrameType::Type3:
-                result = handleType3(data, size, sourceId);
+            case FrameType::TYPE3:
+                lResult = handleType3(apData, aSize, aSourceId);
                 break;
             default:
-                return Result::InvalidParameter;
+                return Result::INVALID_PARAMETER;
         }
 
-        // In RunToCompletion mode, automatically process completed frames
-        if (mode_ == ReceiverMode::RunToCompletion) {
-            std::lock_guard<std::recursive_mutex> lock(netMutex_);
+        // In RUN_TO_COMPLETION mode, automatically process completed frames
+        if (mMode == ReceiverMode::RUN_TO_COMPLETION) {
+            std::lock_guard<std::recursive_mutex> lLock(mNetMutex);
             processTimeouts();
         }
 
-        return result;
+        return lResult;
     }
 
     // Convenience overload for vector
-    Result receive(const std::vector<uint8_t>& data, uint8_t sourceId = 0) {
-        return receive(data.data(), data.size(), sourceId);
+    Result receive(const std::vector<uint8_t>& aData, uint8_t aSourceId = 0) {
+        return receive(aData.data(), aData.size(), aSourceId);
     }
 
-    // For RunToCompletion mode: process timeouts and deliver frames
+    // For RUN_TO_COMPLETION mode: process timeouts and deliver frames
     void poll() {
-        if (mode_ != ReceiverMode::RunToCompletion) return;
+        if (mMode != ReceiverMode::RUN_TO_COMPLETION) return;
 
-        std::lock_guard<std::recursive_mutex> lock(netMutex_);
+        std::lock_guard<std::recursive_mutex> lLock(mNetMutex);
         processTimeouts();
     }
 
     // Stop receiver threads
     void stop() {
-        bool expected = true;
-        if (!running_.compare_exchange_strong(expected, false)) {
+        auto lExpected = true;
+        if (!mRunning.compare_exchange_strong(lExpected, false)) {
             return;  // Already stopped or not started
         }
 
-        deliveryCondition_.notify_all();
+        mDeliveryCondition.notify_all();
 
-        if (workerThread_.joinable()) {
-            workerThread_.join();
+        if (mWorkerThread.joinable()) {
+            mWorkerThread.join();
         }
-        if (deliveryThread_.joinable()) {
-            deliveryThread_.join();
+        if (mDeliveryThread.joinable()) {
+            mDeliveryThread.join();
         }
     }
 
 private:
     struct Stream {
-        uint8_t  payloadType = 0;
-        uint32_t payloadCode = UINT32_MAX;
+        uint8_t  mPayloadType = 0;
+        uint32_t mPayloadCode = UINT32_MAX;
     };
 
     struct Bucket {
-        bool     active         = false;
-        uint8_t  payloadType    = 0;
-        uint32_t payloadCode    = UINT32_MAX;
-        uint16_t savedFrameNo   = 0;
-        int64_t  timeoutUs      = 0;
-        uint16_t fragmentCount  = 0;
-        uint16_t ofFragmentNo   = 0;
-        uint64_t deliveryOrder  = UINT64_MAX;
-        size_t   fragmentSize   = 0;
-        size_t   type3Size      = 0;  // Size of Type3 payload (0 if no Type3)
-        size_t   type2Size      = 0;  // Size of Type2 payload (for relocation if Type3 arrives after)
-        uint64_t pts            = UINT64_MAX;
-        uint64_t dts            = UINT64_MAX;
-        uint8_t  streamId       = 0;
-        uint8_t  sourceId       = 0;
-        uint8_t  flags          = 0;
-        std::bitset<8192> receivedFragments;  // Max fragments per superframe
-        SuperFramePtr frame;
+        bool     mActive         = false;
+        uint8_t  mPayloadType    = 0;
+        uint32_t mPayloadCode    = UINT32_MAX;
+        uint16_t mSavedFrameNo   = 0;
+        int64_t  mTimeoutUs      = 0;
+        uint16_t mFragmentCount  = 0;
+        uint16_t mOfFragmentNo   = 0;
+        uint64_t mDeliveryOrder  = UINT64_MAX;
+        size_t   mFragmentSize   = 0;
+        size_t   mType3Size      = 0;  // Size of Type3 payload (0 if no Type3)
+        size_t   mType2Size      = 0;  // Size of Type2 payload (for relocation if Type3 arrives after)
+        uint64_t mPts            = UINT64_MAX;
+        uint64_t mDts            = UINT64_MAX;
+        uint8_t  mStreamId       = 0;
+        uint8_t  mSourceId       = 0;
+        uint8_t  mFlags          = 0;
+        std::bitset<8192> mReceivedFragments;  // Max fragments per superframe
+        SuperFramePtr mpFrame;
     };
 
     int64_t nowUs() const {
@@ -475,465 +475,465 @@ private:
             std::chrono::steady_clock::now().time_since_epoch()).count();
     }
 
-    uint64_t recalculateSuperFrameNo(uint16_t frameNo) {
-        if (firstFrame_) {
-            oldFrameNo_ = frameNo;
-            frameNoRecalc_ = frameNo;
-            firstFrame_ = false;
-            return frameNoRecalc_;
+    uint64_t recalculateSuperFrameNo(uint16_t aFrameNo) {
+        if (mFirstFrame) {
+            mOldFrameNo = aFrameNo;
+            mFrameNoRecalc = aFrameNo;
+            mFirstFrame = false;
+            return mFrameNoRecalc;
         }
-        int16_t delta = static_cast<int16_t>(frameNo) - static_cast<int16_t>(oldFrameNo_);
-        oldFrameNo_ = frameNo;
-        frameNoRecalc_ += delta;
-        return frameNoRecalc_;
+        auto lDelta = (int16_t)(aFrameNo) - (int16_t)(mOldFrameNo);
+        mOldFrameNo = aFrameNo;
+        mFrameNoRecalc += lDelta;
+        return mFrameNoRecalc;
     }
 
-    Result handleType0(const uint8_t* /*data*/, size_t /*size*/, uint8_t /*sourceId*/) {
+    Result handleType0(const uint8_t* /*apData*/, size_t /*aSize*/, uint8_t /*aSourceId*/) {
         // Type0 signaling - pass through or handle separately
-        return Result::Ok;
+        return Result::OK;
     }
 
-    Result handleType1(const uint8_t* data, size_t size, uint8_t sourceId) {
-        if (size < sizeof(FrameType1)) {
-            return Result::FrameSizeMismatch;
+    Result handleType1(const uint8_t* apData, size_t aSize, uint8_t aSourceId) {
+        if (aSize < sizeof(FrameType1)) {
+            return Result::FRAME_SIZE_MISMATCH;
         }
 
-        std::lock_guard<std::recursive_mutex> lock(netMutex_);
+        std::lock_guard<std::recursive_mutex> lLock(mNetMutex);
 
-        auto* header = reinterpret_cast<const FrameType1*>(data);
+        auto* lpHeader = (const FrameType1*)(apData);
 
         // Bounds check: fragmentNo and ofFragmentNo must fit in bitset (8192 max)
-        if (header->fragmentNo >= 8192 || header->ofFragmentNo >= 8192) {
-            return Result::BufferOutOfBounds;
+        if (lpHeader->mFragmentNo >= 8192 || lpHeader->mOfFragmentNo >= 8192) {
+            return Result::BUFFER_OUT_OF_BOUNDS;
         }
 
         // Check fragmentNo doesn't exceed ofFragmentNo
-        if (header->fragmentNo > header->ofFragmentNo) {
-            return Result::BufferOutOfBounds;
+        if (lpHeader->mFragmentNo > lpHeader->mOfFragmentNo) {
+            return Result::BUFFER_OUT_OF_BOUNDS;
         }
 
-        Bucket* bucket = &buckets_[header->superFrameNo & BufferSize];
+        auto* lpBucket = &mpBuckets[lpHeader->mSuperFrameNo & BUFFER_SIZE];
 
-        size_t payloadSize = size - sizeof(FrameType1);
+        auto lPayloadSize = aSize - sizeof(FrameType1);
 
-        if (!bucket->active) {
-            uint64_t order = recalculateSuperFrameNo(header->superFrameNo);
-            if (order == bucket->deliveryOrder) {
-                return Result::FragmentTooOld;
+        if (!lpBucket->mActive) {
+            auto lOrder = recalculateSuperFrameNo(lpHeader->mSuperFrameNo);
+            if (lOrder == lpBucket->mDeliveryOrder) {
+                return Result::FRAGMENT_TOO_OLD;
             }
 
             // Sanity check on total size to prevent huge allocations
-            size_t totalSize = payloadSize * (static_cast<size_t>(header->ofFragmentNo) + 1);
-            if (totalSize > 100 * 1024 * 1024) {  // 100MB max
-                return Result::TooLargeFrame;
+            auto lTotalSize = lPayloadSize * ((size_t)(lpHeader->mOfFragmentNo) + 1);
+            if (lTotalSize > 100 * 1024 * 1024) {  // 100MB max
+                return Result::TOO_LARGE_FRAME;
             }
 
-            bucket->deliveryOrder = order;
-            bucketMap_[order] = bucket;
-            bucket->active = true;
-            bucket->sourceId = sourceId;
-            bucket->flags = getFlags(header->frameType);
-            bucket->streamId = header->streamId;
-            bucket->savedFrameNo = header->superFrameNo;
-            bucket->receivedFragments.reset();
-            bucket->receivedFragments[header->fragmentNo] = true;
-            bucket->timeoutUs = nowUs() + (timeoutMs_ * 1000);
-            bucket->fragmentCount = 1;  // First fragment received
-            bucket->ofFragmentNo = header->ofFragmentNo;
-            bucket->fragmentSize = payloadSize;
-            bucket->pts = UINT64_MAX;
-            bucket->dts = UINT64_MAX;
+            lpBucket->mDeliveryOrder = lOrder;
+            mBucketMap[lOrder] = lpBucket;
+            lpBucket->mActive = true;
+            lpBucket->mSourceId = aSourceId;
+            lpBucket->mFlags = getFlags(lpHeader->mFrameType);
+            lpBucket->mStreamId = lpHeader->mStreamId;
+            lpBucket->mSavedFrameNo = lpHeader->mSuperFrameNo;
+            lpBucket->mReceivedFragments.reset();
+            lpBucket->mReceivedFragments[lpHeader->mFragmentNo] = true;
+            lpBucket->mTimeoutUs = nowUs() + (mTimeoutMs * 1000);
+            lpBucket->mFragmentCount = 1;  // First fragment received
+            lpBucket->mOfFragmentNo = lpHeader->mOfFragmentNo;
+            lpBucket->mFragmentSize = lPayloadSize;
+            lpBucket->mPts = UINT64_MAX;
+            lpBucket->mDts = UINT64_MAX;
 
             // Get cached stream info
-            Stream* stream = &streams_[header->streamId];
-            bucket->payloadType = stream->payloadType;
-            bucket->payloadCode = stream->payloadCode;
+            auto* lpStream = &mStreams[lpHeader->mStreamId];
+            lpBucket->mPayloadType = lpStream->mPayloadType;
+            lpBucket->mPayloadCode = lpStream->mPayloadCode;
 
-            bucket->frame = std::make_unique<SuperFrame>(totalSize);
-            if (!bucket->frame->data) {
-                bucketMap_.erase(order);
-                bucket->active = false;
-                return Result::MemoryAllocationError;
+            lpBucket->mpFrame = std::make_unique<SuperFrame>(lTotalSize);
+            if (!lpBucket->mpFrame->mpData) {
+                mBucketMap.erase(lOrder);
+                lpBucket->mActive = false;
+                return Result::MEMORY_ALLOCATION_ERROR;
             }
-            bucket->frame->size = totalSize;  // Set expected full frame size
+            lpBucket->mpFrame->mSize = lTotalSize;  // Set expected full frame size
 
-            size_t offset = payloadSize * header->fragmentNo;
-            std::memcpy(bucket->frame->data + offset, data + sizeof(FrameType1), payloadSize);
+            auto lOffset = lPayloadSize * lpHeader->mFragmentNo;
+            std::memcpy(lpBucket->mpFrame->mpData + lOffset, apData + sizeof(FrameType1), lPayloadSize);
 
-            return Result::Ok;
+            return Result::OK;
         }
 
         // Existing bucket
-        if (header->superFrameNo != bucket->savedFrameNo) {
-            return Result::BufferOutOfResources;
+        if (lpHeader->mSuperFrameNo != lpBucket->mSavedFrameNo) {
+            return Result::BUFFER_OUT_OF_RESOURCES;
         }
 
-        if (header->ofFragmentNo != bucket->ofFragmentNo ||
-            header->fragmentNo > bucket->ofFragmentNo) {
-            bucketMap_.erase(bucket->deliveryOrder);
-            bucket->active = false;
-            return Result::BufferOutOfBounds;
+        if (lpHeader->mOfFragmentNo != lpBucket->mOfFragmentNo ||
+            lpHeader->mFragmentNo > lpBucket->mOfFragmentNo) {
+            mBucketMap.erase(lpBucket->mDeliveryOrder);
+            lpBucket->mActive = false;
+            return Result::BUFFER_OUT_OF_BOUNDS;
         }
 
-        if (bucket->receivedFragments[header->fragmentNo]) {
-            return Result::DuplicateFragment;
+        if (lpBucket->mReceivedFragments[lpHeader->mFragmentNo]) {
+            return Result::DUPLICATE_FRAGMENT;
         }
 
-        bucket->receivedFragments[header->fragmentNo] = true;
-        bucket->fragmentCount++;
+        lpBucket->mReceivedFragments[lpHeader->mFragmentNo] = true;
+        lpBucket->mFragmentCount++;
 
-        size_t offset = bucket->fragmentSize * header->fragmentNo;
-        std::memcpy(bucket->frame->data + offset, data + sizeof(FrameType1), payloadSize);
+        auto lOffset = lpBucket->mFragmentSize * lpHeader->mFragmentNo;
+        std::memcpy(lpBucket->mpFrame->mpData + lOffset, apData + sizeof(FrameType1), lPayloadSize);
 
-        return Result::Ok;
+        return Result::OK;
     }
 
-    Result handleType2(const uint8_t* data, size_t size, uint8_t sourceId) {
-        if (size < sizeof(FrameType2)) {
-            return Result::FrameSizeMismatch;
+    Result handleType2(const uint8_t* apData, size_t aSize, uint8_t aSourceId) {
+        if (aSize < sizeof(FrameType2)) {
+            return Result::FRAME_SIZE_MISMATCH;
         }
 
-        std::lock_guard<std::recursive_mutex> lock(netMutex_);
+        std::lock_guard<std::recursive_mutex> lLock(mNetMutex);
 
-        auto* header = reinterpret_cast<const FrameType2*>(data);
+        auto* lpHeader = (const FrameType2*)(apData);
 
-        if (size < sizeof(FrameType2) + header->sizeOfData) {
-            return Result::FrameSizeMismatch;
+        if (aSize < sizeof(FrameType2) + lpHeader->mSizeOfData) {
+            return Result::FRAME_SIZE_MISMATCH;
         }
 
         // Bounds check: ofFragmentNo must fit in bitset (8192 max)
-        if (header->ofFragmentNo >= 8192) {
-            return Result::BufferOutOfBounds;
+        if (lpHeader->mOfFragmentNo >= 8192) {
+            return Result::BUFFER_OUT_OF_BOUNDS;
         }
 
         // Sanity check on total size
-        size_t totalSize = (static_cast<size_t>(header->type1PacketSize) * header->ofFragmentNo) +
-                           header->sizeOfData;
-        if (totalSize > 100 * 1024 * 1024) {  // 100MB max
-            return Result::TooLargeFrame;
+        auto lTotalSize = ((size_t)(lpHeader->mType1PacketSize) * lpHeader->mOfFragmentNo) +
+                          lpHeader->mSizeOfData;
+        if (lTotalSize > 100 * 1024 * 1024) {  // 100MB max
+            return Result::TOO_LARGE_FRAME;
         }
 
-        Bucket* bucket = &buckets_[header->superFrameNo & BufferSize];
+        auto* lpBucket = &mpBuckets[lpHeader->mSuperFrameNo & BUFFER_SIZE];
 
-        if (!bucket->active) {
-            uint64_t order = recalculateSuperFrameNo(header->superFrameNo);
-            if (order == bucket->deliveryOrder) {
-                return Result::FragmentTooOld;
+        if (!lpBucket->mActive) {
+            auto lOrder = recalculateSuperFrameNo(lpHeader->mSuperFrameNo);
+            if (lOrder == lpBucket->mDeliveryOrder) {
+                return Result::FRAGMENT_TOO_OLD;
             }
 
-            bucket->deliveryOrder = order;
-            bucketMap_[order] = bucket;
-            bucket->active = true;
-            bucket->sourceId = sourceId;
-            bucket->flags = getFlags(header->frameType);
-            bucket->streamId = header->streamId;
-            bucket->savedFrameNo = header->superFrameNo;
-            bucket->receivedFragments.reset();
-            bucket->receivedFragments[header->ofFragmentNo] = true;
-            bucket->timeoutUs = nowUs() + (timeoutMs_ * 1000);
-            bucket->fragmentCount = 1;  // First fragment received
-            bucket->ofFragmentNo = header->ofFragmentNo;
-            bucket->fragmentSize = header->type1PacketSize;
-            bucket->type2Size = header->sizeOfData;  // Store for potential relocation
-            bucket->pts = header->pts;
-            bucket->payloadType = header->payloadType;
-            bucket->payloadCode = header->payloadCode;
+            lpBucket->mDeliveryOrder = lOrder;
+            mBucketMap[lOrder] = lpBucket;
+            lpBucket->mActive = true;
+            lpBucket->mSourceId = aSourceId;
+            lpBucket->mFlags = getFlags(lpHeader->mFrameType);
+            lpBucket->mStreamId = lpHeader->mStreamId;
+            lpBucket->mSavedFrameNo = lpHeader->mSuperFrameNo;
+            lpBucket->mReceivedFragments.reset();
+            lpBucket->mReceivedFragments[lpHeader->mOfFragmentNo] = true;
+            lpBucket->mTimeoutUs = nowUs() + (mTimeoutMs * 1000);
+            lpBucket->mFragmentCount = 1;  // First fragment received
+            lpBucket->mOfFragmentNo = lpHeader->mOfFragmentNo;
+            lpBucket->mFragmentSize = lpHeader->mType1PacketSize;
+            lpBucket->mType2Size = lpHeader->mSizeOfData;  // Store for potential relocation
+            lpBucket->mPts = lpHeader->mPts;
+            lpBucket->mPayloadType = lpHeader->mPayloadType;
+            lpBucket->mPayloadCode = lpHeader->mPayloadCode;
 
-            if (header->dtsPtsDiff == UINT32_MAX) {
-                bucket->dts = UINT64_MAX;
+            if (lpHeader->mDtsPtsDiff == UINT32_MAX) {
+                lpBucket->mDts = UINT64_MAX;
             } else {
-                bucket->dts = header->pts - header->dtsPtsDiff;
+                lpBucket->mDts = lpHeader->mPts - lpHeader->mDtsPtsDiff;
             }
 
             // Update stream cache
-            Stream* stream = &streams_[header->streamId];
-            stream->payloadType = header->payloadType;
-            stream->payloadCode = header->payloadCode;
+            auto* lpStream = &mStreams[lpHeader->mStreamId];
+            lpStream->mPayloadType = lpHeader->mPayloadType;
+            lpStream->mPayloadCode = lpHeader->mPayloadCode;
 
-            bucket->frame = std::make_unique<SuperFrame>(totalSize);
-            if (!bucket->frame->data) {
-                bucketMap_.erase(order);
-                bucket->active = false;
-                return Result::MemoryAllocationError;
+            lpBucket->mpFrame = std::make_unique<SuperFrame>(lTotalSize);
+            if (!lpBucket->mpFrame->mpData) {
+                mBucketMap.erase(lOrder);
+                lpBucket->mActive = false;
+                return Result::MEMORY_ALLOCATION_ERROR;
             }
-            bucket->frame->size = totalSize;  // Explicitly set frame size
+            lpBucket->mpFrame->mSize = lTotalSize;  // Explicitly set frame size
 
-            size_t offset = static_cast<size_t>(header->type1PacketSize) * header->ofFragmentNo;
-            std::memcpy(bucket->frame->data + offset, data + sizeof(FrameType2), header->sizeOfData);
+            auto lOffset = (size_t)(lpHeader->mType1PacketSize) * lpHeader->mOfFragmentNo;
+            std::memcpy(lpBucket->mpFrame->mpData + lOffset, apData + sizeof(FrameType2), lpHeader->mSizeOfData);
 
-            return Result::Ok;
+            return Result::OK;
         }
 
         // Existing bucket
-        if (header->superFrameNo != bucket->savedFrameNo) {
-            return Result::BufferOutOfResources;
+        if (lpHeader->mSuperFrameNo != lpBucket->mSavedFrameNo) {
+            return Result::BUFFER_OUT_OF_RESOURCES;
         }
 
-        if (header->ofFragmentNo != bucket->ofFragmentNo) {
-            bucketMap_.erase(bucket->deliveryOrder);
-            bucket->active = false;
-            return Result::BufferOutOfBounds;
+        if (lpHeader->mOfFragmentNo != lpBucket->mOfFragmentNo) {
+            mBucketMap.erase(lpBucket->mDeliveryOrder);
+            lpBucket->mActive = false;
+            return Result::BUFFER_OUT_OF_BOUNDS;
         }
 
-        if (bucket->receivedFragments[header->ofFragmentNo]) {
-            return Result::DuplicateFragment;
+        if (lpBucket->mReceivedFragments[lpHeader->mOfFragmentNo]) {
+            return Result::DUPLICATE_FRAGMENT;
         }
 
-        bucket->receivedFragments[header->ofFragmentNo] = true;
-        bucket->fragmentCount++;
-        bucket->pts = header->pts;
-        bucket->payloadType = header->payloadType;
-        bucket->payloadCode = header->payloadCode;
-        bucket->flags = getFlags(header->frameType);
-        bucket->type2Size = header->sizeOfData;  // Store for potential relocation by Type3
+        lpBucket->mReceivedFragments[lpHeader->mOfFragmentNo] = true;
+        lpBucket->mFragmentCount++;
+        lpBucket->mPts = lpHeader->mPts;
+        lpBucket->mPayloadType = lpHeader->mPayloadType;
+        lpBucket->mPayloadCode = lpHeader->mPayloadCode;
+        lpBucket->mFlags = getFlags(lpHeader->mFrameType);
+        lpBucket->mType2Size = lpHeader->mSizeOfData;  // Store for potential relocation by Type3
 
-        if (header->dtsPtsDiff == UINT32_MAX) {
-            bucket->dts = UINT64_MAX;
+        if (lpHeader->mDtsPtsDiff == UINT32_MAX) {
+            lpBucket->mDts = UINT64_MAX;
         } else {
-            bucket->dts = header->pts - header->dtsPtsDiff;
+            lpBucket->mDts = lpHeader->mPts - lpHeader->mDtsPtsDiff;
         }
 
         // Update stream cache
-        Stream* stream = &streams_[header->streamId];
-        stream->payloadType = header->payloadType;
-        stream->payloadCode = header->payloadCode;
+        auto* lpStream = &mStreams[lpHeader->mStreamId];
+        lpStream->mPayloadType = lpHeader->mPayloadType;
+        lpStream->mPayloadCode = lpHeader->mPayloadCode;
 
         // Set actual frame size, accounting for Type3 if present
-        size_t offset;
-        if (bucket->type3Size > 0) {
+        size_t lOffset;
+        if (lpBucket->mType3Size > 0) {
             // Type3 exists: size = type1 fragments + type3 + type2
-            bucket->frame->size = (bucket->fragmentSize * (header->ofFragmentNo - 1)) +
-                                  bucket->type3Size + header->sizeOfData;
+            lpBucket->mpFrame->mSize = (lpBucket->mFragmentSize * (lpHeader->mOfFragmentNo - 1)) +
+                                       lpBucket->mType3Size + lpHeader->mSizeOfData;
             // Type2 data follows Type3 data
-            offset = (bucket->fragmentSize * (header->ofFragmentNo - 1)) + bucket->type3Size;
+            lOffset = (lpBucket->mFragmentSize * (lpHeader->mOfFragmentNo - 1)) + lpBucket->mType3Size;
         } else {
             // No Type3: size = type1 fragments + type2
-            bucket->frame->size = (bucket->fragmentSize * header->ofFragmentNo) + header->sizeOfData;
-            offset = static_cast<size_t>(header->type1PacketSize) * header->ofFragmentNo;
+            lpBucket->mpFrame->mSize = (lpBucket->mFragmentSize * lpHeader->mOfFragmentNo) + lpHeader->mSizeOfData;
+            lOffset = (size_t)(lpHeader->mType1PacketSize) * lpHeader->mOfFragmentNo;
         }
 
-        std::memcpy(bucket->frame->data + offset, data + sizeof(FrameType2), header->sizeOfData);
+        std::memcpy(lpBucket->mpFrame->mpData + lOffset, apData + sizeof(FrameType2), lpHeader->mSizeOfData);
 
-        return Result::Ok;
+        return Result::OK;
     }
 
-    Result handleType3(const uint8_t* data, size_t size, uint8_t sourceId) {
-        if (size < sizeof(FrameType3)) {
-            return Result::FrameSizeMismatch;
+    Result handleType3(const uint8_t* apData, size_t aSize, uint8_t aSourceId) {
+        if (aSize < sizeof(FrameType3)) {
+            return Result::FRAME_SIZE_MISMATCH;
         }
 
-        std::lock_guard<std::recursive_mutex> lock(netMutex_);
+        std::lock_guard<std::recursive_mutex> lLock(mNetMutex);
 
-        auto* header = reinterpret_cast<const FrameType3*>(data);
+        auto* lpHeader = (const FrameType3*)(apData);
 
         // Bounds check: ofFragmentNo must fit in bitset and be > 0 for Type3
-        if (header->ofFragmentNo >= 8192 || header->ofFragmentNo == 0) {
-            return Result::BufferOutOfBounds;
+        if (lpHeader->mOfFragmentNo >= 8192 || lpHeader->mOfFragmentNo == 0) {
+            return Result::BUFFER_OUT_OF_BOUNDS;
         }
 
-        Bucket* bucket = &buckets_[header->superFrameNo & BufferSize];
+        auto* lpBucket = &mpBuckets[lpHeader->mSuperFrameNo & BUFFER_SIZE];
 
-        uint16_t fragmentNo = header->ofFragmentNo - 1;  // Type3 is always penultimate
-        size_t payloadSize = size - sizeof(FrameType3);
+        auto lFragmentNo = (uint16_t)(lpHeader->mOfFragmentNo - 1);  // Type3 is always penultimate
+        auto lPayloadSize = aSize - sizeof(FrameType3);
 
         // Sanity check on total size
-        size_t totalSize = (static_cast<size_t>(header->type1PacketSize) * (header->ofFragmentNo - 1)) +
-                           payloadSize;
-        if (totalSize > 100 * 1024 * 1024) {  // 100MB max
-            return Result::TooLargeFrame;
+        auto lTotalSize = ((size_t)(lpHeader->mType1PacketSize) * (lpHeader->mOfFragmentNo - 1)) +
+                          lPayloadSize;
+        if (lTotalSize > 100 * 1024 * 1024) {  // 100MB max
+            return Result::TOO_LARGE_FRAME;
         }
 
-        if (!bucket->active) {
-            uint64_t order = recalculateSuperFrameNo(header->superFrameNo);
-            if (order == bucket->deliveryOrder) {
-                return Result::FragmentTooOld;
+        if (!lpBucket->mActive) {
+            auto lOrder = recalculateSuperFrameNo(lpHeader->mSuperFrameNo);
+            if (lOrder == lpBucket->mDeliveryOrder) {
+                return Result::FRAGMENT_TOO_OLD;
             }
 
-            bucket->deliveryOrder = order;
-            bucketMap_[order] = bucket;
-            bucket->active = true;
-            bucket->sourceId = sourceId;
-            bucket->flags = getFlags(header->frameType);
-            bucket->streamId = header->streamId;
-            bucket->savedFrameNo = header->superFrameNo;
-            bucket->receivedFragments.reset();
-            bucket->receivedFragments[fragmentNo] = true;
-            bucket->timeoutUs = nowUs() + (timeoutMs_ * 1000);
-            bucket->fragmentCount = 1;  // First fragment received
-            bucket->ofFragmentNo = header->ofFragmentNo;
-            bucket->fragmentSize = header->type1PacketSize;
-            bucket->type3Size = payloadSize;  // Store Type3 payload size
-            bucket->pts = UINT64_MAX;
-            bucket->dts = UINT64_MAX;
+            lpBucket->mDeliveryOrder = lOrder;
+            mBucketMap[lOrder] = lpBucket;
+            lpBucket->mActive = true;
+            lpBucket->mSourceId = aSourceId;
+            lpBucket->mFlags = getFlags(lpHeader->mFrameType);
+            lpBucket->mStreamId = lpHeader->mStreamId;
+            lpBucket->mSavedFrameNo = lpHeader->mSuperFrameNo;
+            lpBucket->mReceivedFragments.reset();
+            lpBucket->mReceivedFragments[lFragmentNo] = true;
+            lpBucket->mTimeoutUs = nowUs() + (mTimeoutMs * 1000);
+            lpBucket->mFragmentCount = 1;  // First fragment received
+            lpBucket->mOfFragmentNo = lpHeader->mOfFragmentNo;
+            lpBucket->mFragmentSize = lpHeader->mType1PacketSize;
+            lpBucket->mType3Size = lPayloadSize;  // Store Type3 payload size
+            lpBucket->mPts = UINT64_MAX;
+            lpBucket->mDts = UINT64_MAX;
 
             // Get cached stream info
-            Stream* stream = &streams_[header->streamId];
-            bucket->payloadType = stream->payloadType;
-            bucket->payloadCode = stream->payloadCode;
+            auto* lpStream = &mStreams[lpHeader->mStreamId];
+            lpBucket->mPayloadType = lpStream->mPayloadType;
+            lpBucket->mPayloadCode = lpStream->mPayloadCode;
 
-            bucket->frame = std::make_unique<SuperFrame>(totalSize);
-            if (!bucket->frame->data) {
-                bucketMap_.erase(order);
-                bucket->active = false;
-                return Result::MemoryAllocationError;
+            lpBucket->mpFrame = std::make_unique<SuperFrame>(lTotalSize);
+            if (!lpBucket->mpFrame->mpData) {
+                mBucketMap.erase(lOrder);
+                lpBucket->mActive = false;
+                return Result::MEMORY_ALLOCATION_ERROR;
             }
-            bucket->frame->size = totalSize;  // Set expected frame size
+            lpBucket->mpFrame->mSize = lTotalSize;  // Set expected frame size
 
-            size_t offset = header->type1PacketSize * fragmentNo;
-            std::memcpy(bucket->frame->data + offset, data + sizeof(FrameType3), payloadSize);
+            auto lOffset = lpHeader->mType1PacketSize * lFragmentNo;
+            std::memcpy(lpBucket->mpFrame->mpData + lOffset, apData + sizeof(FrameType3), lPayloadSize);
 
-            return Result::Ok;
+            return Result::OK;
         }
 
         // Existing bucket
-        if (header->superFrameNo != bucket->savedFrameNo) {
-            return Result::BufferOutOfResources;
+        if (lpHeader->mSuperFrameNo != lpBucket->mSavedFrameNo) {
+            return Result::BUFFER_OUT_OF_RESOURCES;
         }
 
-        if (header->ofFragmentNo != bucket->ofFragmentNo || fragmentNo > bucket->ofFragmentNo) {
-            bucketMap_.erase(bucket->deliveryOrder);
-            bucket->active = false;
-            return Result::BufferOutOfBounds;
+        if (lpHeader->mOfFragmentNo != lpBucket->mOfFragmentNo || lFragmentNo > lpBucket->mOfFragmentNo) {
+            mBucketMap.erase(lpBucket->mDeliveryOrder);
+            lpBucket->mActive = false;
+            return Result::BUFFER_OUT_OF_BOUNDS;
         }
 
-        if (bucket->receivedFragments[fragmentNo]) {
-            return Result::DuplicateFragment;
+        if (lpBucket->mReceivedFragments[lFragmentNo]) {
+            return Result::DUPLICATE_FRAGMENT;
         }
 
-        bucket->receivedFragments[fragmentNo] = true;
-        bucket->fragmentCount++;
-        bucket->type3Size = payloadSize;  // Store Type3 payload size for Type2's calculation
+        lpBucket->mReceivedFragments[lFragmentNo] = true;
+        lpBucket->mFragmentCount++;
+        lpBucket->mType3Size = lPayloadSize;  // Store Type3 payload size for Type2's calculation
 
         // If Type2 was received before Type3, we need to relocate Type2's data
         // Type2 was placed at fragmentSize * ofFragmentNo, but should be at
         // fragmentSize * (ofFragmentNo - 1) + type3Size
-        if (bucket->receivedFragments[header->ofFragmentNo] && bucket->type2Size > 0) {
-            size_t oldOffset = bucket->fragmentSize * header->ofFragmentNo;
-            size_t newOffset = (bucket->fragmentSize * (header->ofFragmentNo - 1)) + payloadSize;
+        if (lpBucket->mReceivedFragments[lpHeader->mOfFragmentNo] && lpBucket->mType2Size > 0) {
+            auto lOldOffset = lpBucket->mFragmentSize * lpHeader->mOfFragmentNo;
+            auto lNewOffset = (lpBucket->mFragmentSize * (lpHeader->mOfFragmentNo - 1)) + lPayloadSize;
             // Use memmove because regions may overlap
-            std::memmove(bucket->frame->data + newOffset,
-                         bucket->frame->data + oldOffset,
-                         bucket->type2Size);
+            std::memmove(lpBucket->mpFrame->mpData + lNewOffset,
+                         lpBucket->mpFrame->mpData + lOldOffset,
+                         lpBucket->mType2Size);
             // Update frame size now that we know type3Size
-            bucket->frame->size = (bucket->fragmentSize * (header->ofFragmentNo - 1)) +
-                                  payloadSize + bucket->type2Size;
-        } else if (!bucket->receivedFragments[header->ofFragmentNo]) {
+            lpBucket->mpFrame->mSize = (lpBucket->mFragmentSize * (lpHeader->mOfFragmentNo - 1)) +
+                                       lPayloadSize + lpBucket->mType2Size;
+        } else if (!lpBucket->mReceivedFragments[lpHeader->mOfFragmentNo]) {
             // Only update frame size if Type2 hasn't been received yet
-            bucket->frame->size = (bucket->fragmentSize * (header->ofFragmentNo - 1)) + payloadSize;
+            lpBucket->mpFrame->mSize = (lpBucket->mFragmentSize * (lpHeader->mOfFragmentNo - 1)) + lPayloadSize;
         }
 
-        size_t offset = bucket->fragmentSize * fragmentNo;
-        std::memcpy(bucket->frame->data + offset, data + sizeof(FrameType3), payloadSize);
+        auto lOffset = lpBucket->mFragmentSize * lFragmentNo;
+        std::memcpy(lpBucket->mpFrame->mpData + lOffset, apData + sizeof(FrameType3), lPayloadSize);
 
-        return Result::Ok;
+        return Result::OK;
     }
 
-    void deliverFrame(Bucket* bucket) {
-        bucket->frame->payloadType = bucket->payloadType;
-        bucket->frame->payloadCode = bucket->payloadCode;
-        bucket->frame->pts = bucket->pts;
-        bucket->frame->dts = bucket->dts;
-        bucket->frame->streamId = bucket->streamId;
-        bucket->frame->sourceId = bucket->sourceId;
-        bucket->frame->flags = bucket->flags;
-        bucket->frame->superFrameNo = bucket->savedFrameNo;
-        bucket->frame->broken = (bucket->fragmentCount != bucket->ofFragmentNo + 1);
+    void deliverFrame(Bucket* apBucket) {
+        apBucket->mpFrame->mPayloadType = apBucket->mPayloadType;
+        apBucket->mpFrame->mPayloadCode = apBucket->mPayloadCode;
+        apBucket->mpFrame->mPts = apBucket->mPts;
+        apBucket->mpFrame->mDts = apBucket->mDts;
+        apBucket->mpFrame->mStreamId = apBucket->mStreamId;
+        apBucket->mpFrame->mSourceId = apBucket->mSourceId;
+        apBucket->mpFrame->mFlags = apBucket->mFlags;
+        apBucket->mpFrame->mSuperFrameNo = apBucket->mSavedFrameNo;
+        apBucket->mpFrame->mBroken = (apBucket->mFragmentCount != apBucket->mOfFragmentNo + 1);
 
-        if (mode_ == ReceiverMode::Threaded) {
-            std::lock_guard<std::mutex> lock(deliveryMutex_);
-            deliveryQueue_.push_back(std::move(bucket->frame));
-            deliveryReady_ = true;
-            deliveryCondition_.notify_one();
-        } else if (callback_) {
-            callback_(std::move(bucket->frame));
+        if (mMode == ReceiverMode::THREADED) {
+            std::lock_guard<std::mutex> lLock(mDeliveryMutex);
+            mDeliveryQueue.push_back(std::move(apBucket->mpFrame));
+            mDeliveryReady = true;
+            mDeliveryCondition.notify_one();
+        } else if (mCallback) {
+            mCallback(std::move(apBucket->mpFrame));
         }
 
-        bucketMap_.erase(bucket->deliveryOrder);
-        bucket->active = false;
-        bucket->frame = nullptr;
+        mBucketMap.erase(apBucket->mDeliveryOrder);
+        apBucket->mActive = false;
+        apBucket->mpFrame = nullptr;
     }
 
     void processTimeouts() {
-        int64_t now = nowUs();
-        std::vector<Bucket*> toDeliver;
+        auto lNow = nowUs();
+        std::vector<Bucket*> lToDeliver;
 
-        for (auto& [order, bucket] : bucketMap_) {
+        for (auto& [lOrder, lpBucket] : mBucketMap) {
             // Total fragments = ofFragmentNo + 1 (since ofFragmentNo is 0-based index of last fragment)
-            bool complete = (bucket->fragmentCount == bucket->ofFragmentNo + 1);
-            bool timedOut = (bucket->timeoutUs <= now);
+            auto lComplete = (lpBucket->mFragmentCount == lpBucket->mOfFragmentNo + 1);
+            auto lTimedOut = (lpBucket->mTimeoutUs <= lNow);
 
-            if (complete || timedOut) {
-                toDeliver.push_back(bucket);
+            if (lComplete || lTimedOut) {
+                lToDeliver.push_back(lpBucket);
             }
         }
 
-        for (auto* bucket : toDeliver) {
-            deliverFrame(bucket);
+        for (auto* lpBucket : lToDeliver) {
+            deliverFrame(lpBucket);
         }
     }
 
     void workerLoop() {
-        constexpr int64_t sleepUs = 10000;  // 10ms
+        constexpr int64_t SLEEP_US = 10000;  // 10ms
 
-        while (running_.load()) {
+        while (mRunning.load()) {
             {
-                std::lock_guard<std::recursive_mutex> lock(netMutex_);
+                std::lock_guard<std::recursive_mutex> lLock(mNetMutex);
                 processTimeouts();
             }
-            std::this_thread::sleep_for(std::chrono::microseconds(sleepUs));
+            std::this_thread::sleep_for(std::chrono::microseconds(SLEEP_US));
         }
     }
 
     void deliveryLoop() {
-        while (running_.load()) {
-            SuperFramePtr frame;
+        while (mRunning.load()) {
+            SuperFramePtr lpFrame;
             {
-                std::unique_lock<std::mutex> lock(deliveryMutex_);
-                deliveryCondition_.wait(lock, [this] {
-                    return deliveryReady_ || !running_.load();
+                std::unique_lock<std::mutex> lLock(mDeliveryMutex);
+                mDeliveryCondition.wait(lLock, [this] {
+                    return mDeliveryReady || !mRunning.load();
                 });
 
-                if (!running_.load() && deliveryQueue_.empty()) break;
+                if (!mRunning.load() && mDeliveryQueue.empty()) break;
 
-                if (!deliveryQueue_.empty()) {
-                    frame = std::move(deliveryQueue_.front());
-                    deliveryQueue_.pop_front();
+                if (!mDeliveryQueue.empty()) {
+                    lpFrame = std::move(mDeliveryQueue.front());
+                    mDeliveryQueue.pop_front();
                 }
 
-                if (deliveryQueue_.empty()) {
-                    deliveryReady_ = false;
+                if (mDeliveryQueue.empty()) {
+                    mDeliveryReady = false;
                 }
             }
 
-            if (frame && callback_) {
-                callback_(std::move(frame));
+            if (lpFrame && mCallback) {
+                mCallback(std::move(lpFrame));
             }
         }
     }
 
-    uint32_t timeoutMs_;
-    uint32_t holTimeoutMs_;
-    ReceiverMode mode_;
+    uint32_t mTimeoutMs;
+    uint32_t mHolTimeoutMs;
+    ReceiverMode mMode;
 
-    Bucket* buckets_;
-    std::map<uint64_t, Bucket*> bucketMap_;
-    Stream streams_[256];  // All 256 stream IDs (0-255)
-    std::recursive_mutex netMutex_;
+    Bucket* mpBuckets;
+    std::map<uint64_t, Bucket*> mBucketMap;
+    Stream mStreams[256];  // All 256 stream IDs (0-255)
+    std::recursive_mutex mNetMutex;
 
-    uint16_t oldFrameNo_ = 0;
-    uint64_t frameNoRecalc_ = 0;
-    bool firstFrame_ = true;
+    uint16_t mOldFrameNo = 0;
+    uint64_t mFrameNoRecalc = 0;
+    bool mFirstFrame = true;
 
-    std::atomic<bool> running_{false};
-    std::thread workerThread_;
-    std::thread deliveryThread_;
+    std::atomic<bool> mRunning{false};
+    std::thread mWorkerThread;
+    std::thread mDeliveryThread;
 
-    std::mutex deliveryMutex_;
-    std::deque<SuperFramePtr> deliveryQueue_;
-    std::condition_variable deliveryCondition_;
-    bool deliveryReady_ = false;
+    std::mutex mDeliveryMutex;
+    std::deque<SuperFramePtr> mDeliveryQueue;
+    std::condition_variable mDeliveryCondition;
+    bool mDeliveryReady = false;
 
-    ReceiveCallback callback_;
+    ReceiveCallback mCallback;
 };
 
 } // namespace efp

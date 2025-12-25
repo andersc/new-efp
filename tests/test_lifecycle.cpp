@@ -52,9 +52,9 @@ TEST_SUITE("Lifecycle") {
 
             receiver.setCallback([&](efp::SuperFramePtr frame) {
                 receivedFrameNumber++;
-                CHECK(!frame->broken);
-                CHECK(frame->pts == 1000 + receivedFrameNumber);
-                CHECK(frame->streamId == 1);
+                CHECK(!frame->mBroken);
+                CHECK(frame->mPts == 1000 + receivedFrameNumber);
+                CHECK(frame->mStreamId == 1);
                 dataReceived++;
             });
 
@@ -67,7 +67,7 @@ TEST_SUITE("Lifecycle") {
 
                 auto result = sender.send(mydata, 0x83, packetNumber + 1001, packetNumber,
                                          EFP_CODE('A', 'N', 'X', 'B'), 1);
-                CHECK(result == efp::Result::Ok);
+                CHECK(result == efp::Result::OK);
             }
 
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
@@ -87,9 +87,9 @@ TEST_SUITE("Lifecycle") {
 
             receiver.setCallback([&](efp::SuperFramePtr frame) {
                 receivedFrameNumber++;
-                CHECK(!frame->broken);
-                CHECK(frame->pts == 1000 - 100 + receivedFrameNumber);
-                CHECK(frame->streamId == 2);
+                CHECK(!frame->mBroken);
+                CHECK(frame->mPts == 1000 - 100 + receivedFrameNumber);
+                CHECK(frame->mStreamId == 2);
                 dataReceived++;
             });
 
@@ -102,7 +102,7 @@ TEST_SUITE("Lifecycle") {
 
                 auto result = sender.send(mydata, 0x83, packetNumber + 1001, packetNumber,
                                          EFP_CODE('A', 'N', 'X', 'B'), 2);
-                CHECK(result == efp::Result::Ok);
+                CHECK(result == efp::Result::OK);
             }
 
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
@@ -118,28 +118,28 @@ TEST_SUITE("Lifecycle") {
         const size_t FRAME_SIZE = (MTU - sizeof(efp::FrameType1)) + 1;
 
         efp::Sender sender(MTU);
-        efp::Receiver receiver(50, 20, efp::ReceiverMode::RunToCompletion);
+        efp::Receiver receiver(50, 20, efp::ReceiverMode::RUN_TO_COMPLETION);
 
         std::atomic<size_t> dataReceived{0};
 
         receiver.setCallback([&](efp::SuperFramePtr frame) {
-            CHECK(frame->streamId == 4);
-            CHECK(frame->pts == 1001);
-            CHECK(frame->payloadCode == 2);
-            CHECK(!frame->broken);
-            CHECK(frame->size == FRAME_SIZE);
+            CHECK(frame->mStreamId == 4);
+            CHECK(frame->mPts == 1001);
+            CHECK(frame->mPayloadCode == 2);
+            CHECK(!frame->mBroken);
+            CHECK(frame->mSize == FRAME_SIZE);
             dataReceived++;
         });
 
         sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
             auto result = receiver.receive(data, size, 0);
-            CHECK(result == efp::Result::Ok);
+            CHECK(result == efp::Result::OK);
         });
 
         std::vector<uint8_t> mydata(FRAME_SIZE);
 
         auto result = sender.send(mydata, 0x02, 1001, 1, 2, 4);
-        CHECK(result == efp::Result::Ok);
+        CHECK(result == efp::Result::OK);
 
         // In run-to-completion mode, data should be delivered synchronously
         // after all fragments are received
@@ -156,7 +156,7 @@ TEST_SUITE("Lifecycle") {
 
             std::atomic<bool> received{false};
             receiver.setCallback([&](efp::SuperFramePtr frame) {
-                CHECK(!frame->broken);
+                CHECK(!frame->mBroken);
                 received = true;
             });
 
@@ -176,7 +176,7 @@ TEST_SUITE("Lifecycle") {
 
             std::atomic<bool> received{false};
             receiver.setCallback([&](efp::SuperFramePtr frame) {
-                CHECK(!frame->broken);
+                CHECK(!frame->mBroken);
                 received = true;
             });
 
@@ -196,7 +196,7 @@ TEST_SUITE("Lifecycle") {
 
             std::atomic<bool> received{false};
             receiver.setCallback([&](efp::SuperFramePtr frame) {
-                CHECK(!frame->broken);
+                CHECK(!frame->mBroken);
                 received = true;
             });
 
@@ -222,7 +222,7 @@ TEST_SUITE("Lifecycle") {
         std::mutex receiverMutex;
 
         receiver.setCallback([&](efp::SuperFramePtr frame) {
-            if (!frame->broken) received++;
+            if (!frame->mBroken) received++;
         });
 
         sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
@@ -348,12 +348,12 @@ TEST_SUITE("Lifecycle") {
     // =========================================================================
     TEST_CASE("Run-to-completion poll delivers frames") {
         efp::Sender sender(MTU);
-        efp::Receiver receiver(100, 0, efp::ReceiverMode::RunToCompletion);
+        efp::Receiver receiver(100, 0, efp::ReceiverMode::RUN_TO_COMPLETION);
 
         std::atomic<int> received{0};
 
         receiver.setCallback([&](efp::SuperFramePtr frame) {
-            CHECK(!frame->broken);
+            CHECK(!frame->mBroken);
             received++;
         });
 
@@ -401,7 +401,7 @@ TEST_SUITE("Lifecycle") {
         std::vector<uint8_t> payload(50);
         auto result = sender.send(payload, 0x01, 1000, 1000, 0, 1);
 
-        CHECK(result == efp::Result::Ok);
+        CHECK(result == efp::Result::OK);
         CHECK(sent.load());
     }
 

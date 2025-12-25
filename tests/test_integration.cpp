@@ -62,8 +62,8 @@ TEST_SUITE("Integration") {
         CHECK(receivedFrames.size() == numFrames);
 
         for (int i = 0; i < numFrames; i++) {
-            CHECK(receivedFrames[i]->pts == static_cast<uint64_t>(1000 + i));
-            CHECK(!receivedFrames[i]->broken);
+            CHECK(receivedFrames[i]->mPts == static_cast<uint64_t>(1000 + i));
+            CHECK(!receivedFrames[i]->mBroken);
         }
     }
 
@@ -77,7 +77,7 @@ TEST_SUITE("Integration") {
 
         receiver.setCallback([&](efp::SuperFramePtr frame) {
             std::lock_guard<std::mutex> lock(framesMutex);
-            framesByStream[frame->streamId].push_back(std::move(frame));
+            framesByStream[frame->mStreamId].push_back(std::move(frame));
             totalReceived++;
         });
 
@@ -111,7 +111,7 @@ TEST_SUITE("Integration") {
 
         receiver.setCallback([&](efp::SuperFramePtr frame) {
             std::lock_guard<std::mutex> lock(mutex);
-            receivedSizes.push_back(frame->size);
+            receivedSizes.push_back(frame->mSize);
             receivedCount++;
         });
 
@@ -173,11 +173,11 @@ TEST_SUITE("Integration") {
         REQUIRE(waitFor([&]{ return received.load(); }));
         REQUIRE(capturedFrame != nullptr);
 
-        CHECK(capturedFrame->size == payloadSize);
-        CHECK(!capturedFrame->broken);
+        CHECK(capturedFrame->mSize == payloadSize);
+        CHECK(!capturedFrame->mBroken);
 
         for (size_t i = 0; i < payloadSize; i++) {
-            CHECK(capturedFrame->data[i] == static_cast<uint8_t>((i * 7 + 13) & 0xFF));
+            CHECK(capturedFrame->mpData[i] == static_cast<uint8_t>((i * 7 + 13) & 0xFF));
         }
     }
 
@@ -210,9 +210,9 @@ TEST_SUITE("Integration") {
         REQUIRE(waitFor([&]{ return received.load(); }));
         REQUIRE(capturedFrame != nullptr);
 
-        CHECK(capturedFrame->payloadType == efp::media::PayloadType::H264);
-        CHECK(capturedFrame->payloadCode == efp::media::PayloadCode::ANXB);
-        CHECK(!capturedFrame->broken);
+        CHECK(capturedFrame->mPayloadType == efp::media::PayloadType::H264);
+        CHECK(capturedFrame->mPayloadCode == efp::media::PayloadCode::ANXB);
+        CHECK(!capturedFrame->mBroken);
     }
 
     TEST_CASE("Custom buffer size template parameter") {
@@ -243,7 +243,7 @@ TEST_SUITE("Integration") {
         std::atomic<int> receivedCount{0};
 
         receiver.setCallback([&](efp::SuperFramePtr frame) {
-            if (!frame->broken) {
+            if (!frame->mBroken) {
                 receivedCount++;
             }
         });

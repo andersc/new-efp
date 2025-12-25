@@ -16,23 +16,23 @@
 //------------------------------------------------------------------------------
 
 struct efp_sender_s {
-    std::unique_ptr<efp::Sender<>> sender;
-    efp_send_callback_t callback = nullptr;
-    void* ctx = nullptr;
+    std::unique_ptr<efp::Sender<>> mpSender;
+    efp_send_callback_t mCallback = nullptr;
+    void* mpCtx = nullptr;
 };
 
 struct efp_receiver_s {
-    std::unique_ptr<efp::Receiver<>> receiver;
-    efp_receive_callback_t callback = nullptr;
-    efp_embedded_callback_t embedded_callback = nullptr;
-    void* ctx = nullptr;
+    std::unique_ptr<efp::Receiver<>> mpReceiver;
+    efp_receive_callback_t mCallback = nullptr;
+    efp_embedded_callback_t mEmbeddedCallback = nullptr;
+    void* mpCtx = nullptr;
 };
 
 // Legacy API handle management
-static std::recursive_mutex g_handles_mutex;
-static std::map<uint64_t, efp_sender_t> g_sender_handles;
-static std::map<uint64_t, efp_receiver_t> g_receiver_handles;
-static uint64_t g_next_handle = 1;
+static std::recursive_mutex gHandlesMutex;
+static std::map<uint64_t, efp_sender_t> gSenderHandles;
+static std::map<uint64_t, efp_receiver_t> gReceiverHandles;
+static uint64_t gNextHandle = 1;
 
 //------------------------------------------------------------------------------
 // Version
@@ -46,178 +46,178 @@ uint16_t efp_version(void) {
 // Sender API
 //------------------------------------------------------------------------------
 
-efp_sender_t efp_sender_create(uint16_t mtu) {
+efp_sender_t efp_sender_create(uint16_t aMtu) {
     try {
-        auto* s = new efp_sender_s();
-        s->sender = std::make_unique<efp::Sender<>>(mtu);
-        return s;
+        auto* lpSender = new efp_sender_s();
+        lpSender->mpSender = std::make_unique<efp::Sender<>>(aMtu);
+        return lpSender;
     } catch (...) {
         return nullptr;
     }
 }
 
-void efp_sender_destroy(efp_sender_t sender) {
-    if (sender) {
-        delete sender;
+void efp_sender_destroy(efp_sender_t apSender) {
+    if (apSender) {
+        delete apSender;
     }
 }
 
-void efp_sender_set_callback(efp_sender_t sender, efp_send_callback_t callback, void* ctx) {
-    if (!sender) return;
+void efp_sender_set_callback(efp_sender_t apSender, efp_send_callback_t aCallback, void* apCtx) {
+    if (!apSender) return;
 
-    sender->callback = callback;
-    sender->ctx = ctx;
+    apSender->mCallback = aCallback;
+    apSender->mpCtx = apCtx;
 
-    sender->sender->setCallback([sender](const uint8_t* data, size_t size, uint8_t stream_id) {
-        if (sender->callback) {
-            sender->callback(data, size, stream_id, sender->ctx);
+    apSender->mpSender->setCallback([apSender](const uint8_t* apData, size_t aSize, uint8_t aStreamId) {
+        if (apSender->mCallback) {
+            apSender->mCallback(apData, aSize, aStreamId, apSender->mpCtx);
         }
     });
 }
 
-int16_t efp_sender_send(efp_sender_t sender,
-                        const uint8_t* data, size_t size,
-                        uint8_t payload_type,
-                        uint64_t pts, uint64_t dts,
-                        uint32_t payload_code,
-                        uint8_t stream_id,
-                        uint8_t flags) {
-    if (!sender || !sender->sender) {
+int16_t efp_sender_send(efp_sender_t apSender,
+                        const uint8_t* apData, size_t aSize,
+                        uint8_t aPayloadType,
+                        uint64_t aPts, uint64_t aDts,
+                        uint32_t aPayloadCode,
+                        uint8_t aStreamId,
+                        uint8_t aFlags) {
+    if (!apSender || !apSender->mpSender) {
         return EFP_INVALID_PARAMETER;
     }
 
-    auto result = sender->sender->send(data, size, payload_type, pts, dts,
-                                       payload_code, stream_id, flags);
-    return static_cast<int16_t>(result);
+    auto lResult = apSender->mpSender->send(apData, aSize, aPayloadType, aPts, aDts,
+                                            aPayloadCode, aStreamId, aFlags);
+    return (int16_t)(lResult);
 }
 
-void efp_sender_set_superframe_no(efp_sender_t sender, uint16_t superframe_no) {
+void efp_sender_set_superframe_no(efp_sender_t apSender, uint16_t aSuperframeNo) {
     // This requires adding a method to the Sender class
     // For now, this is a placeholder
-    (void)sender;
-    (void)superframe_no;
+    (void)apSender;
+    (void)aSuperframeNo;
 }
 
 //------------------------------------------------------------------------------
 // Receiver API
 //------------------------------------------------------------------------------
 
-efp_receiver_t efp_receiver_create(uint32_t timeout_ms, uint32_t hol_timeout_ms, uint32_t mode) {
+efp_receiver_t efp_receiver_create(uint32_t aTimeoutMs, uint32_t aHolTimeoutMs, uint32_t aMode) {
     try {
-        auto* r = new efp_receiver_s();
-        efp::ReceiverMode recv_mode = (mode == EFP_MODE_RUN_TO_COMPLETION)
-            ? efp::ReceiverMode::RunToCompletion
-            : efp::ReceiverMode::Threaded;
+        auto* lpReceiver = new efp_receiver_s();
+        auto lRecvMode = (aMode == EFP_MODE_RUN_TO_COMPLETION)
+            ? efp::ReceiverMode::RUN_TO_COMPLETION
+            : efp::ReceiverMode::THREADED;
 
-        r->receiver = std::make_unique<efp::Receiver<>>(timeout_ms, hol_timeout_ms, recv_mode);
-        return r;
+        lpReceiver->mpReceiver = std::make_unique<efp::Receiver<>>(aTimeoutMs, aHolTimeoutMs, lRecvMode);
+        return lpReceiver;
     } catch (...) {
         return nullptr;
     }
 }
 
-void efp_receiver_destroy(efp_receiver_t receiver) {
-    if (receiver) {
-        if (receiver->receiver) {
-            receiver->receiver->stop();
+void efp_receiver_destroy(efp_receiver_t apReceiver) {
+    if (apReceiver) {
+        if (apReceiver->mpReceiver) {
+            apReceiver->mpReceiver->stop();
         }
-        delete receiver;
+        delete apReceiver;
     }
 }
 
-void efp_receiver_set_callback(efp_receiver_t receiver,
-                                efp_receive_callback_t callback, void* ctx) {
-    if (!receiver) return;
+void efp_receiver_set_callback(efp_receiver_t apReceiver,
+                                efp_receive_callback_t aCallback, void* apCtx) {
+    if (!apReceiver) return;
 
-    receiver->callback = callback;
-    receiver->ctx = ctx;
+    apReceiver->mCallback = aCallback;
+    apReceiver->mpCtx = apCtx;
 
-    receiver->receiver->setCallback([receiver](efp::SuperFramePtr frame) {
-        if (receiver->callback && frame) {
+    apReceiver->mpReceiver->setCallback([apReceiver](efp::SuperFramePtr apFrame) {
+        if (apReceiver->mCallback && apFrame) {
             // Handle embedded data if callback is set
-            size_t payload_offset = 0;
+            size_t lPayloadOffset = 0;
 
-            if (receiver->embedded_callback &&
-                (frame->flags & efp::Flags::InlinePayload) &&
-                !frame->broken) {
+            if (apReceiver->mEmbeddedCallback &&
+                (apFrame->mFlags & efp::Flags::INLINE_PAYLOAD) &&
+                !apFrame->mBroken) {
 
                 // Parse embedded data
-                size_t offset = 0;
-                while (offset + 3 <= frame->size) {
-                    uint8_t type = frame->data[offset];
-                    if (type == 0) break;
+                size_t lOffset = 0;
+                while (lOffset + 3 <= apFrame->mSize) {
+                    auto lType = apFrame->mpData[lOffset];
+                    if (lType == 0) break;
 
-                    uint16_t emb_size = frame->data[offset + 1] |
-                                       (frame->data[offset + 2] << 8);
+                    auto lEmbSize = (uint16_t)(apFrame->mpData[lOffset + 1] |
+                                              (apFrame->mpData[lOffset + 2] << 8));
 
-                    bool is_last = (type & 0x80) != 0;
-                    uint8_t actual_type = type & 0x7F;
+                    auto lIsLast = (lType & 0x80) != 0;
+                    auto lActualType = (uint8_t)(lType & 0x7F);
 
-                    if (offset + 3 + emb_size <= frame->size) {
-                        receiver->embedded_callback(
-                            frame->data + offset + 3,
-                            emb_size,
-                            actual_type,
-                            frame->pts,
-                            receiver->ctx
+                    if (lOffset + 3 + lEmbSize <= apFrame->mSize) {
+                        apReceiver->mEmbeddedCallback(
+                            apFrame->mpData + lOffset + 3,
+                            lEmbSize,
+                            lActualType,
+                            apFrame->mPts,
+                            apReceiver->mpCtx
                         );
                     }
 
-                    offset += 3 + emb_size;
+                    lOffset += 3 + lEmbSize;
 
-                    if (is_last) {
-                        payload_offset = offset;
+                    if (lIsLast) {
+                        lPayloadOffset = lOffset;
                         break;
                     }
                 }
             }
 
             // Call main callback
-            receiver->callback(
-                frame->data + payload_offset,
-                frame->size - payload_offset,
-                frame->payloadType,
-                frame->broken ? 1 : 0,
-                frame->pts,
-                frame->dts,
-                frame->payloadCode,
-                frame->streamId,
-                frame->sourceId,
-                frame->flags,
-                receiver->ctx
+            apReceiver->mCallback(
+                apFrame->mpData + lPayloadOffset,
+                apFrame->mSize - lPayloadOffset,
+                apFrame->mPayloadType,
+                apFrame->mBroken ? 1 : 0,
+                apFrame->mPts,
+                apFrame->mDts,
+                apFrame->mPayloadCode,
+                apFrame->mStreamId,
+                apFrame->mSourceId,
+                apFrame->mFlags,
+                apReceiver->mpCtx
             );
         }
     });
 }
 
-void efp_receiver_set_embedded_callback(efp_receiver_t receiver,
-                                         efp_embedded_callback_t callback, void* ctx) {
-    if (!receiver) return;
-    receiver->embedded_callback = callback;
+void efp_receiver_set_embedded_callback(efp_receiver_t apReceiver,
+                                         efp_embedded_callback_t aCallback, void* apCtx) {
+    if (!apReceiver) return;
+    apReceiver->mEmbeddedCallback = aCallback;
     // Note: ctx is shared with main callback
-    (void)ctx;
+    (void)apCtx;
 }
 
-int16_t efp_receiver_receive(efp_receiver_t receiver,
-                              const uint8_t* data, size_t size,
-                              uint8_t source_id) {
-    if (!receiver || !receiver->receiver) {
+int16_t efp_receiver_receive(efp_receiver_t apReceiver,
+                              const uint8_t* apData, size_t aSize,
+                              uint8_t aSourceId) {
+    if (!apReceiver || !apReceiver->mpReceiver) {
         return EFP_INVALID_PARAMETER;
     }
 
-    auto result = receiver->receiver->receive(data, size, source_id);
-    return static_cast<int16_t>(result);
+    auto lResult = apReceiver->mpReceiver->receive(apData, aSize, aSourceId);
+    return (int16_t)(lResult);
 }
 
-void efp_receiver_poll(efp_receiver_t receiver) {
-    if (receiver && receiver->receiver) {
-        receiver->receiver->poll();
+void efp_receiver_poll(efp_receiver_t apReceiver) {
+    if (apReceiver && apReceiver->mpReceiver) {
+        apReceiver->mpReceiver->poll();
     }
 }
 
-void efp_receiver_stop(efp_receiver_t receiver) {
-    if (receiver && receiver->receiver) {
-        receiver->receiver->stop();
+void efp_receiver_stop(efp_receiver_t apReceiver) {
+    if (apReceiver && apReceiver->mpReceiver) {
+        apReceiver->mpReceiver->stop();
     }
 }
 
@@ -225,81 +225,81 @@ void efp_receiver_stop(efp_receiver_t receiver) {
 // Embedded Data Helpers
 //------------------------------------------------------------------------------
 
-size_t efp_embedded_calc_size(size_t embedded_size, size_t payload_size) {
-    return 3 + embedded_size + payload_size;  // header (3) + embedded + payload
+size_t efp_embedded_calc_size(size_t aEmbeddedSize, size_t aPayloadSize) {
+    return 3 + aEmbeddedSize + aPayloadSize;  // header (3) + embedded + payload
 }
 
-size_t efp_add_embedded_data(uint8_t* dst,
-                              const uint8_t* embedded_data,
-                              const uint8_t* payload_data,
-                              size_t embedded_size,
-                              size_t payload_size,
-                              uint8_t type,
-                              uint8_t is_last) {
-    size_t total_size = efp_embedded_calc_size(embedded_size, payload_size);
+size_t efp_add_embedded_data(uint8_t* apDst,
+                              const uint8_t* apEmbeddedData,
+                              const uint8_t* apPayloadData,
+                              size_t aEmbeddedSize,
+                              size_t aPayloadSize,
+                              uint8_t aType,
+                              uint8_t aIsLast) {
+    auto lTotalSize = efp_embedded_calc_size(aEmbeddedSize, aPayloadSize);
 
-    if (!dst) {
-        return total_size;  // Return required size
+    if (!apDst) {
+        return lTotalSize;  // Return required size
     }
 
     // Build embedded header
-    uint8_t type_byte = type;
-    if (is_last) {
-        type_byte |= EFP_EMBEDDED_LAST;
+    auto lTypeByte = aType;
+    if (aIsLast) {
+        lTypeByte |= EFP_EMBEDDED_LAST;
     }
 
-    dst[0] = type_byte;
-    dst[1] = embedded_size & 0xFF;
-    dst[2] = (embedded_size >> 8) & 0xFF;
+    apDst[0] = lTypeByte;
+    apDst[1] = aEmbeddedSize & 0xFF;
+    apDst[2] = (aEmbeddedSize >> 8) & 0xFF;
 
     // Copy embedded data
-    if (embedded_data && embedded_size > 0) {
-        std::memcpy(dst + 3, embedded_data, embedded_size);
+    if (apEmbeddedData && aEmbeddedSize > 0) {
+        std::memcpy(apDst + 3, apEmbeddedData, aEmbeddedSize);
     }
 
     // Copy payload
-    if (payload_data && payload_size > 0) {
-        std::memcpy(dst + 3 + embedded_size, payload_data, payload_size);
+    if (apPayloadData && aPayloadSize > 0) {
+        std::memcpy(apDst + 3 + aEmbeddedSize, apPayloadData, aPayloadSize);
     }
 
     return 0;  // Success
 }
 
-int16_t efp_extract_embedded_data(const uint8_t* frame_data, size_t frame_size,
-                                   uint8_t* embedded_out, size_t* embedded_size_out,
-                                   uint8_t* type_out, size_t* payload_offset_out) {
-    if (!frame_data || frame_size < 3) {
+int16_t efp_extract_embedded_data(const uint8_t* apFrameData, size_t aFrameSize,
+                                   uint8_t* apEmbeddedOut, size_t* apEmbeddedSizeOut,
+                                   uint8_t* apTypeOut, size_t* apPayloadOffsetOut) {
+    if (!apFrameData || aFrameSize < 3) {
         return EFP_INVALID_PARAMETER;
     }
 
-    uint8_t type = frame_data[0];
-    if (type == 0) {
+    auto lType = apFrameData[0];
+    if (lType == 0) {
         // No embedded data
-        if (payload_offset_out) *payload_offset_out = 0;
-        if (embedded_size_out) *embedded_size_out = 0;
+        if (apPayloadOffsetOut) *apPayloadOffsetOut = 0;
+        if (apEmbeddedSizeOut) *apEmbeddedSizeOut = 0;
         return EFP_OK;
     }
 
-    uint16_t emb_size = frame_data[1] | (frame_data[2] << 8);
+    auto lEmbSize = (uint16_t)(apFrameData[1] | (apFrameData[2] << 8));
 
-    if (3 + emb_size > frame_size) {
+    if (3 + lEmbSize > aFrameSize) {
         return EFP_BUFFER_OUT_OF_BOUNDS;
     }
 
-    if (type_out) {
-        *type_out = type & 0x7F;  // Remove last flag
+    if (apTypeOut) {
+        *apTypeOut = lType & 0x7F;  // Remove last flag
     }
 
-    if (embedded_size_out) {
-        *embedded_size_out = emb_size;
+    if (apEmbeddedSizeOut) {
+        *apEmbeddedSizeOut = lEmbSize;
     }
 
-    if (embedded_out && emb_size > 0) {
-        std::memcpy(embedded_out, frame_data + 3, emb_size);
+    if (apEmbeddedOut && lEmbSize > 0) {
+        std::memcpy(apEmbeddedOut, apFrameData + 3, lEmbSize);
     }
 
-    if (payload_offset_out) {
-        *payload_offset_out = 3 + emb_size;
+    if (apPayloadOffsetOut) {
+        *apPayloadOffsetOut = 3 + lEmbSize;
     }
 
     return EFP_OK;
@@ -309,96 +309,96 @@ int16_t efp_extract_embedded_data(const uint8_t* frame_data, size_t frame_size,
 // Legacy API Implementation
 //------------------------------------------------------------------------------
 
-uint64_t efp_init_send(uint64_t mtu,
-                       void (*f)(const uint8_t*, size_t, uint8_t, void*),
-                       void* ctx) {
-    efp_sender_t sender = efp_sender_create(static_cast<uint16_t>(mtu));
-    if (!sender) {
+uint64_t efp_init_send(uint64_t aMtu,
+                       void (*aCallback)(const uint8_t*, size_t, uint8_t, void*),
+                       void* apCtx) {
+    auto lpSender = efp_sender_create((uint16_t)(aMtu));
+    if (!lpSender) {
         return 0;
     }
 
-    efp_sender_set_callback(sender, f, ctx);
+    efp_sender_set_callback(lpSender, aCallback, apCtx);
 
-    std::lock_guard<std::recursive_mutex> lock(g_handles_mutex);
-    uint64_t handle = g_next_handle++;
-    g_sender_handles[handle] = sender;
-    return handle;
+    std::lock_guard<std::recursive_mutex> lLock(gHandlesMutex);
+    auto lHandle = gNextHandle++;
+    gSenderHandles[lHandle] = lpSender;
+    return lHandle;
 }
 
-uint64_t efp_init_receive(uint32_t bucket_timeout, uint32_t hol_timeout,
-                          void (*f)(uint8_t*, size_t, uint8_t, uint8_t, uint64_t,
+uint64_t efp_init_receive(uint32_t aBucketTimeout, uint32_t aHolTimeout,
+                          void (*aCallback)(uint8_t*, size_t, uint8_t, uint8_t, uint64_t,
                                    uint64_t, uint32_t, uint8_t, uint8_t, uint8_t, void*),
-                          void (*g)(uint8_t*, size_t, uint8_t, uint64_t, void*),
-                          void* ctx,
-                          uint32_t mode) {
-    efp_receiver_t receiver = efp_receiver_create(bucket_timeout, hol_timeout, mode);
-    if (!receiver) {
+                          void (*aEmbeddedCallback)(uint8_t*, size_t, uint8_t, uint64_t, void*),
+                          void* apCtx,
+                          uint32_t aMode) {
+    auto lpReceiver = efp_receiver_create(aBucketTimeout, aHolTimeout, aMode);
+    if (!lpReceiver) {
         return 0;
     }
 
-    efp_receiver_set_callback(receiver, f, ctx);
-    efp_receiver_set_embedded_callback(receiver, g, ctx);
+    efp_receiver_set_callback(lpReceiver, aCallback, apCtx);
+    efp_receiver_set_embedded_callback(lpReceiver, aEmbeddedCallback, apCtx);
 
-    std::lock_guard<std::recursive_mutex> lock(g_handles_mutex);
-    uint64_t handle = g_next_handle++;
-    g_receiver_handles[handle] = receiver;
-    return handle;
+    std::lock_guard<std::recursive_mutex> lLock(gHandlesMutex);
+    auto lHandle = gNextHandle++;
+    gReceiverHandles[lHandle] = lpReceiver;
+    return lHandle;
 }
 
-int16_t efp_end_send(uint64_t efp_object) {
-    std::lock_guard<std::recursive_mutex> lock(g_handles_mutex);
+int16_t efp_end_send(uint64_t aEfpObject) {
+    std::lock_guard<std::recursive_mutex> lLock(gHandlesMutex);
 
-    auto it = g_sender_handles.find(efp_object);
-    if (it == g_sender_handles.end()) {
+    auto lIt = gSenderHandles.find(aEfpObject);
+    if (lIt == gSenderHandles.end()) {
         return EFP_INVALID_PARAMETER;
     }
 
-    efp_sender_destroy(it->second);
-    g_sender_handles.erase(it);
+    efp_sender_destroy(lIt->second);
+    gSenderHandles.erase(lIt);
     return EFP_OK;
 }
 
-int16_t efp_end_receive(uint64_t efp_object) {
-    std::lock_guard<std::recursive_mutex> lock(g_handles_mutex);
+int16_t efp_end_receive(uint64_t aEfpObject) {
+    std::lock_guard<std::recursive_mutex> lLock(gHandlesMutex);
 
-    auto it = g_receiver_handles.find(efp_object);
-    if (it == g_receiver_handles.end()) {
+    auto lIt = gReceiverHandles.find(aEfpObject);
+    if (lIt == gReceiverHandles.end()) {
         return EFP_INVALID_PARAMETER;
     }
 
-    efp_receiver_destroy(it->second);
-    g_receiver_handles.erase(it);
+    efp_receiver_destroy(lIt->second);
+    gReceiverHandles.erase(lIt);
     return EFP_OK;
 }
 
-int16_t efp_send_data(uint64_t efp_object,
-                      const uint8_t* data, size_t size,
-                      uint8_t data_content,
-                      uint64_t pts, uint64_t dts,
-                      uint32_t code,
-                      uint8_t stream_id,
-                      uint8_t flags) {
-    std::lock_guard<std::recursive_mutex> lock(g_handles_mutex);
+int16_t efp_send_data(uint64_t aEfpObject,
+                      const uint8_t* apData, size_t aSize,
+                      uint8_t aDataContent,
+                      uint64_t aPts, uint64_t aDts,
+                      uint32_t aCode,
+                      uint8_t aStreamId,
+                      uint8_t aFlags) {
+    std::lock_guard<std::recursive_mutex> lLock(gHandlesMutex);
 
-    auto it = g_sender_handles.find(efp_object);
-    if (it == g_sender_handles.end()) {
+    auto lIt = gSenderHandles.find(aEfpObject);
+    if (lIt == gSenderHandles.end()) {
         return EFP_INVALID_PARAMETER;
     }
 
-    return efp_sender_send(it->second, data, size, data_content, pts, dts,
-                          code, stream_id, flags);
+    return efp_sender_send(lIt->second, apData, aSize, aDataContent, aPts, aDts,
+                          aCode, aStreamId, aFlags);
 }
 
-int16_t efp_receive_fragment(uint64_t efp_object,
-                             const uint8_t* fragment, size_t size,
-                             uint8_t from_source) {
-    std::lock_guard<std::recursive_mutex> lock(g_handles_mutex);
+int16_t efp_receive_fragment(uint64_t aEfpObject,
+                             const uint8_t* apFragment, size_t aSize,
+                             uint8_t aFromSource) {
+    std::lock_guard<std::recursive_mutex> lLock(gHandlesMutex);
 
-    auto it = g_receiver_handles.find(efp_object);
-    if (it == g_receiver_handles.end()) {
+    auto lIt = gReceiverHandles.find(aEfpObject);
+    if (lIt == gReceiverHandles.end()) {
         return EFP_INVALID_PARAMETER;
     }
 
-    return efp_receiver_receive(it->second, fragment, size, from_source);
+    return efp_receiver_receive(lIt->second, apFragment, aSize, aFromSource);
 }
 

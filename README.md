@@ -34,24 +34,24 @@ A lightweight, header-only C++17 library for fragmenting and reassembling data o
 #include "efp.h"
 
 int main() {
-    efp::Sender sender(1400);  // MTU size
-    efp::Receiver receiver(100);  // 100ms timeout
+    efp::Sender lSender(1400);  // MTU size
+    efp::Receiver lReceiver(100);  // 100ms timeout
 
     // Receive callback
-    receiver.setCallback([](efp::SuperFramePtr frame) {
+    lReceiver.setCallback([](efp::SuperFramePtr apFrame) {
         // Process received data
-        process(frame->data, frame->size);
+        process(apFrame->mpData, apFrame->mSize);
     });
 
     // Connect sender to receiver (via your transport)
-    sender.setCallback([&](const uint8_t* data, size_t size, uint8_t streamId) {
+    lSender.setCallback([&](const uint8_t* apData, size_t aSize, uint8_t aStreamId) {
         // Send over network, then on receive:
-        receiver.receive(data, size);
+        lReceiver.receive(apData, aSize);
     });
 
     // Send data
-    std::vector<uint8_t> payload = getData();
-    sender.send(payload, 0x01, pts, dts, 0, streamId);
+    std::vector<uint8_t> lPayload = getData();
+    lSender.send(lPayload, 0x01, lPts, lDts, 0, lStreamId);
 }
 ```
 
@@ -83,33 +83,33 @@ Copy `efp.h`, `efp_internal.h`, and optionally `efp_media_types.h` to your proje
 ### Sender
 
 ```cpp
-template<uint16_t BufferSize = 8191>
+template<uint16_t BUFFER_SIZE = 8191>
 class Sender {
-    explicit Sender(uint16_t mtu);
+    explicit Sender(uint16_t aMtu);
 
-    void setCallback(SendCallback callback);
+    void setCallback(SendCallback aCallback);
 
-    Result send(const uint8_t* data, size_t size,
-                uint8_t payloadType, uint64_t pts, uint64_t dts,
-                uint32_t payloadCode, uint8_t streamId,
-                uint8_t flags = Flags::None);
+    Result send(const uint8_t* apData, size_t aSize,
+                uint8_t aPayloadType, uint64_t aPts, uint64_t aDts,
+                uint32_t aPayloadCode, uint8_t aStreamId,
+                uint8_t aFlags = Flags::NONE);
 };
 ```
 
 ### Receiver
 
 ```cpp
-template<uint16_t BufferSize = 8191>
+template<uint16_t BUFFER_SIZE = 8191>
 class Receiver {
-    explicit Receiver(uint32_t timeoutMs = 100,
-                      uint32_t holTimeoutMs = 0,
-                      ReceiverMode mode = ReceiverMode::Threaded);
+    explicit Receiver(uint32_t aTimeoutMs = 100,
+                      uint32_t aHolTimeoutMs = 0,
+                      ReceiverMode aMode = ReceiverMode::THREADED);
 
-    void setCallback(ReceiveCallback callback);
+    void setCallback(ReceiveCallback aCallback);
 
-    Result receive(const uint8_t* data, size_t size, uint8_t sourceId = 0);
+    Result receive(const uint8_t* apData, size_t aSize, uint8_t aSourceId = 0);
 
-    void poll();  // For RunToCompletion mode
+    void poll();  // For RUN_TO_COMPLETION mode
     void stop();
 };
 ```
@@ -118,16 +118,16 @@ class Receiver {
 
 ```cpp
 class SuperFrame {
-    uint8_t* data;         // Frame data (32-byte aligned)
-    size_t   size;         // Frame size
-    uint8_t  payloadType;  // User-defined type
-    uint32_t payloadCode;  // User-defined code
-    uint64_t pts;          // Presentation timestamp
-    uint64_t dts;          // Decode timestamp
-    uint8_t  streamId;     // Stream identifier
-    uint8_t  sourceId;     // Source identifier
-    uint8_t  flags;        // Frame flags
-    bool     broken;       // True if incomplete
+    uint8_t* mpData;        // Frame data (32-byte aligned)
+    size_t   mSize;         // Frame size
+    uint8_t  mPayloadType;  // User-defined type
+    uint32_t mPayloadCode;  // User-defined code
+    uint64_t mPts;          // Presentation timestamp
+    uint64_t mDts;          // Decode timestamp
+    uint8_t  mStreamId;     // Stream identifier
+    uint8_t  mSourceId;     // Source identifier
+    uint8_t  mFlags;        // Frame flags
+    bool     mBroken;       // True if incomplete
 };
 ```
 
@@ -168,27 +168,27 @@ Type2 (27 bytes):
 The circular buffer size must be `2^n - 1` for efficient bitmask operations:
 
 ```cpp
-efp::Sender<1023> sender(1400);   // 2^10 - 1
-efp::Sender<4095> sender(1400);   // 2^12 - 1
-efp::Sender<8191> sender(1400);   // 2^13 - 1 (default)
-efp::Sender<16383> sender(1400);  // 2^14 - 1
+efp::Sender<1023> lSender(1400);   // 2^10 - 1
+efp::Sender<4095> lSender(1400);   // 2^12 - 1
+efp::Sender<8191> lSender(1400);   // 2^13 - 1 (default)
+efp::Sender<16383> lSender(1400);  // 2^14 - 1
 ```
 
 Invalid sizes cause compile-time errors:
 
 ```cpp
-efp::Sender<1000> sender(1400);  // ERROR: not 2^n - 1
+efp::Sender<1000> lSender(1400);  // ERROR: not 2^n - 1
 ```
 
 ### Receiver Modes
 
 ```cpp
 // Threaded mode (default): Background threads handle assembly
-efp::Receiver receiver(100, 0, efp::ReceiverMode::Threaded);
+efp::Receiver lReceiver(100, 0, efp::ReceiverMode::THREADED);
 
 // Run-to-completion: No threads, caller drives processing
-efp::Receiver receiver(100, 0, efp::ReceiverMode::RunToCompletion);
-receiver.poll();  // Must call periodically
+efp::Receiver lReceiver(100, 0, efp::ReceiverMode::RUN_TO_COMPLETION);
+lReceiver.poll();  // Must call periodically
 ```
 
 ## Media Types (Optional)
@@ -198,12 +198,12 @@ Include `efp_media_types.h` for predefined media constants:
 ```cpp
 #include "efp_media_types.h"
 
-sender.send(nalUnit,
+lSender.send(lNalUnit,
             efp::media::PayloadType::H264,
-            pts,
-            dts,
+            lPts,
+            lDts,
             efp::media::PayloadCode::ANXB,  // Annex B framing
-            streamId);
+            lStreamId);
 ```
 
 ## Building Tests
@@ -227,6 +227,21 @@ ctest
 # Run C API tests
 ./efp_c_tests
 ```
+
+## Code Style
+
+This project follows a specific naming convention (see `codestyle.txt`):
+
+- **Local variables**: `l` prefix (e.g., `lResult`, `lSize`)
+- **Parameters**: `a` prefix for value, `r` for reference, `p` for pointer (e.g., `aSize`, `rData`, `apBuffer`)
+- **Member variables**: `m` prefix (e.g., `mSize`, `mCallback`)
+- **Member pointers**: `mp` prefix (e.g., `mpData`, `mpFrame`)
+- **Global variables**: `g` prefix (e.g., `gHandlesMutex`)
+- **Constants**: `UPPER_SNAKE_CASE` (e.g., `BUFFER_SIZE`, `INLINE_PAYLOAD`)
+- **Types**: PascalCase (e.g., `SuperFrame`, `ReceiverMode`)
+- **Functions**: camelCase (e.g., `setCallback`, `receive`)
+- **Casts**: C-style casts only (e.g., `(uint8_t)(value)`)
+- **No `_` prefix/postfix** on identifiers
 
 ## Use Cases
 

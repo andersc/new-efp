@@ -79,20 +79,20 @@ TEST_SUITE("Embedded Data") {
         std::atomic<bool> received{false};
 
         receiver.setCallback([&](efp::SuperFramePtr frame) {
-            CHECK(!frame->broken);
-            CHECK(frame->flags == efp::Flags::InlinePayload);
+            CHECK(!frame->mBroken);
+            CHECK(frame->mFlags == efp::Flags::INLINE_PAYLOAD);
 
             // Extract embedded data
-            if (frame->size >= 3) {
-                uint8_t type = frame->data[0];
-                uint16_t size = frame->data[1] | (frame->data[2] << 8);
+            if (frame->mSize >= 3) {
+                uint8_t type = frame->mpData[0];
+                uint16_t size = frame->mpData[1] | (frame->mpData[2] << 8);
 
                 CHECK((type & 0x80) != 0);  // Last flag set
                 CHECK(size == sizeof(PrivateData));
 
-                if (frame->size >= 3 + size) {
+                if (frame->mSize >= 3 + size) {
                     PrivateData extracted;
-                    std::memcpy(&extracted, frame->data + 3, sizeof(PrivateData));
+                    std::memcpy(&extracted, frame->mpData + 3, sizeof(PrivateData));
 
                     CHECK(extracted.value1 == original.value1);
                     CHECK(extracted.value2 == original.value2);
@@ -108,7 +108,7 @@ TEST_SUITE("Embedded Data") {
         });
 
         sender.send(combined, 0x83, 1000, 1000, EFP_CODE('A', 'N', 'X', 'B'), 1,
-                   efp::Flags::InlinePayload);
+                   efp::Flags::INLINE_PAYLOAD);
 
         REQUIRE(waitFor([&]() { return received.load(); }));
     }
@@ -132,32 +132,32 @@ TEST_SUITE("Embedded Data") {
 
         sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
             auto result = receiver.receive(data, size, 0);
-            CHECK(result == efp::Result::Ok);
+            CHECK(result == efp::Result::OK);
         });
 
         size_t receivedFrameNumber = 0;
         receiver.setCallback([&](efp::SuperFramePtr frame) {
             receivedFrameNumber++;
-            CHECK(!frame->broken);
-            CHECK(frame->streamId == 1);
-            CHECK(frame->payloadCode == EFP_CODE('A', 'N', 'X', 'B'));
-            CHECK(frame->flags == efp::Flags::InlinePayload);
+            CHECK(!frame->mBroken);
+            CHECK(frame->mStreamId == 1);
+            CHECK(frame->mPayloadCode == EFP_CODE('A', 'N', 'X', 'B'));
+            CHECK(frame->mFlags == efp::Flags::INLINE_PAYLOAD);
 
             // Parse embedded data
             size_t offset = 0;
             int embeddedCount = 0;
 
-            while (offset + 3 <= frame->size) {
-                uint8_t type = frame->data[offset];
-                uint16_t size = frame->data[offset + 1] | (frame->data[offset + 2] << 8);
+            while (offset + 3 <= frame->mSize) {
+                uint8_t type = frame->mpData[offset];
+                uint16_t size = frame->mpData[offset + 1] | (frame->mpData[offset + 2] << 8);
 
                 if (type == 0) break;  // No more embedded data
 
                 bool isLast = (type & 0x80) != 0;
 
-                if (offset + 3 + size <= frame->size) {
+                if (offset + 3 + size <= frame->mSize) {
                     PrivateData extracted;
-                    std::memcpy(&extracted, frame->data + offset + 3,
+                    std::memcpy(&extracted, frame->mpData + offset + 3,
                                std::min(size, (uint16_t)sizeof(PrivateData)));
 
                     CHECK(extracted.myPrivateInteger == 10);
@@ -217,8 +217,8 @@ TEST_SUITE("Embedded Data") {
 
             auto result = sender.send(combined, 0x83, packetNumber + 1001,
                                       packetNumber, EFP_CODE('A', 'N', 'X', 'B'), 1,
-                                      efp::Flags::InlinePayload);
-            CHECK(result == efp::Result::Ok);
+                                      efp::Flags::INLINE_PAYLOAD);
+            CHECK(result == efp::Result::OK);
         }
 
         REQUIRE(waitFor([&]() { return dataReceived.load() == 15; },
@@ -243,23 +243,23 @@ TEST_SUITE("Embedded Data") {
 
         sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
             auto result = receiver.receive(data, size, 0);
-            CHECK(result == efp::Result::Ok);
+            CHECK(result == efp::Result::OK);
         });
 
         receiver.setCallback([&](efp::SuperFramePtr frame) {
             size_t frameNum = ++receivedFrameNumber;
-            CHECK(!frame->broken);
-            CHECK(frame->streamId == 1);
-            CHECK(frame->payloadCode == EFP_CODE('A', 'N', 'X', 'B'));
-            CHECK(frame->pts == 1000 + frameNum);
-            CHECK(frame->flags == efp::Flags::InlinePayload);
+            CHECK(!frame->mBroken);
+            CHECK(frame->mStreamId == 1);
+            CHECK(frame->mPayloadCode == EFP_CODE('A', 'N', 'X', 'B'));
+            CHECK(frame->mPts == 1000 + frameNum);
+            CHECK(frame->mFlags == efp::Flags::INLINE_PAYLOAD);
 
             // Extract and verify embedded data
-            if (frame->size >= 3 + sizeof(PrivateData)) {
+            if (frame->mSize >= 3 + sizeof(PrivateData)) {
                 PrivateData extracted;
-                std::memcpy(&extracted, frame->data + 3, sizeof(PrivateData));
+                std::memcpy(&extracted, frame->mpData + 3, sizeof(PrivateData));
 
-                CHECK(extracted.sizeOfData == frame->size);
+                CHECK(extracted.sizeOfData == frame->mSize);
                 CHECK(extracted.myPrivateInteger == 10);
                 CHECK(extracted.myPrivateUint8_t == 44);
             }
@@ -306,8 +306,8 @@ TEST_SUITE("Embedded Data") {
 
             auto result = sender.send(combined, 0x83, packetNumber + 1001,
                                       packetNumber, EFP_CODE('A', 'N', 'X', 'B'), 1,
-                                      efp::Flags::InlinePayload);
-            CHECK(result == efp::Result::Ok);
+                                      efp::Flags::INLINE_PAYLOAD);
+            CHECK(result == efp::Result::OK);
         }
 
         REQUIRE(waitFor([&]() { return dataReceived.load() == 100; },
@@ -336,8 +336,8 @@ TEST_SUITE("Embedded Data") {
 
         receiver.setCallback([&](efp::SuperFramePtr frame) {
             // Frame should be marked as broken due to missing fragment
-            CHECK(frame->broken);
-            CHECK(frame->flags == efp::Flags::InlinePayload);
+            CHECK(frame->mBroken);
+            CHECK(frame->mFlags == efp::Flags::INLINE_PAYLOAD);
             received = true;
         });
 
@@ -355,7 +355,7 @@ TEST_SUITE("Embedded Data") {
         // Add payload
         combined.resize(FRAME_SIZE, 0xCD);
 
-        sender.send(combined, 0x83, 1000, 1000, 0, 1, efp::Flags::InlinePayload);
+        sender.send(combined, 0x83, 1000, 1000, 0, 1, efp::Flags::INLINE_PAYLOAD);
 
         REQUIRE(waitFor([&]() { return received.load(); }));
     }
@@ -372,17 +372,17 @@ TEST_SUITE("Embedded Data") {
         const size_t EMBEDDED_SIZE = 1024;
 
         receiver.setCallback([&](efp::SuperFramePtr frame) {
-            CHECK(!frame->broken);
-            CHECK(frame->flags == efp::Flags::InlinePayload);
+            CHECK(!frame->mBroken);
+            CHECK(frame->mFlags == efp::Flags::INLINE_PAYLOAD);
 
             // Verify embedded data
-            if (frame->size >= 3) {
-                uint16_t size = frame->data[1] | (frame->data[2] << 8);
+            if (frame->mSize >= 3) {
+                uint16_t size = frame->mpData[1] | (frame->mpData[2] << 8);
                 CHECK(size == EMBEDDED_SIZE);
 
                 // Verify embedded content
                 for (size_t i = 0; i < std::min(size, (uint16_t)100); i++) {
-                    CHECK(frame->data[3 + i] == static_cast<uint8_t>(i & 0xFF));
+                    CHECK(frame->mpData[3 + i] == static_cast<uint8_t>(i & 0xFF));
                 }
             }
 
@@ -410,7 +410,7 @@ TEST_SUITE("Embedded Data") {
         // Add some payload
         combined.resize(combined.size() + 500, 0xEE);
 
-        sender.send(combined, 0x01, 1000, 1000, 0, 1, efp::Flags::InlinePayload);
+        sender.send(combined, 0x01, 1000, 1000, 0, 1, efp::Flags::INLINE_PAYLOAD);
 
         REQUIRE(waitFor([&]() { return received.load(); }));
     }
@@ -425,8 +425,8 @@ TEST_SUITE("Embedded Data") {
         std::atomic<bool> received{false};
 
         receiver.setCallback([&](efp::SuperFramePtr frame) {
-            CHECK(!frame->broken);
-            CHECK(frame->flags == efp::Flags::InlinePayload);
+            CHECK(!frame->mBroken);
+            CHECK(frame->mFlags == efp::Flags::INLINE_PAYLOAD);
             // Even with flag set, data should be received as-is
             received = true;
         });
@@ -438,7 +438,7 @@ TEST_SUITE("Embedded Data") {
         std::vector<uint8_t> payload(500, 0xAB);
 
         // Set inline payload flag but send regular data
-        sender.send(payload, 0x01, 1000, 1000, 0, 1, efp::Flags::InlinePayload);
+        sender.send(payload, 0x01, 1000, 1000, 0, 1, efp::Flags::INLINE_PAYLOAD);
 
         REQUIRE(waitFor([&]() { return received.load(); }));
     }

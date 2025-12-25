@@ -53,17 +53,17 @@ TEST_SUITE("Receiver") {
         REQUIRE(waitFor([&]{ return received.load(); }));
         REQUIRE(capturedFrame != nullptr);
 
-        CHECK(capturedFrame->size == 100);
-        CHECK(capturedFrame->payloadType == 0x42);
-        CHECK(capturedFrame->pts == 1000);
-        CHECK(capturedFrame->dts == 900);
-        CHECK(capturedFrame->payloadCode == 0xDEADBEEF);
-        CHECK(capturedFrame->streamId == 5);
-        CHECK(!capturedFrame->broken);
+        CHECK(capturedFrame->mSize == 100);
+        CHECK(capturedFrame->mPayloadType == 0x42);
+        CHECK(capturedFrame->mPts == 1000);
+        CHECK(capturedFrame->mDts == 900);
+        CHECK(capturedFrame->mPayloadCode == 0xDEADBEEF);
+        CHECK(capturedFrame->mStreamId == 5);
+        CHECK(!capturedFrame->mBroken);
 
         // Verify data integrity
         for (size_t i = 0; i < 100; i++) {
-            CHECK(capturedFrame->data[i] == static_cast<uint8_t>(i));
+            CHECK(capturedFrame->mpData[i] == static_cast<uint8_t>(i));
         }
     }
 
@@ -95,12 +95,12 @@ TEST_SUITE("Receiver") {
         REQUIRE(waitFor([&]{ return received.load(); }));
         REQUIRE(capturedFrame != nullptr);
 
-        CHECK(capturedFrame->size == payloadSize);
-        CHECK(!capturedFrame->broken);
+        CHECK(capturedFrame->mSize == payloadSize);
+        CHECK(!capturedFrame->mBroken);
 
         // Verify data integrity
         for (size_t i = 0; i < payloadSize; i++) {
-            CHECK(capturedFrame->data[i] == static_cast<uint8_t>(i & 0xFF));
+            CHECK(capturedFrame->mpData[i] == static_cast<uint8_t>(i & 0xFF));
         }
     }
 
@@ -138,19 +138,19 @@ TEST_SUITE("Receiver") {
         REQUIRE(waitFor([&]{ return received.load(); }));
         REQUIRE(capturedFrame != nullptr);
 
-        CHECK(capturedFrame->size == payloadSize);
-        CHECK(!capturedFrame->broken);
+        CHECK(capturedFrame->mSize == payloadSize);
+        CHECK(!capturedFrame->mBroken);
 
         // Verify data integrity
         for (size_t i = 0; i < payloadSize; i++) {
-            CHECK(capturedFrame->data[i] == static_cast<uint8_t>(i & 0xFF));
+            CHECK(capturedFrame->mpData[i] == static_cast<uint8_t>(i & 0xFF));
         }
     }
 
     TEST_CASE("Duplicate fragments are detected") {
         efp::Sender sender(MTU);
         // Use RunToCompletion mode so frames aren't delivered by background thread
-        efp::Receiver receiver(100, 0, efp::ReceiverMode::RunToCompletion);
+        efp::Receiver receiver(100, 0, efp::ReceiverMode::RUN_TO_COMPLETION);
 
         std::vector<std::vector<uint8_t>> fragments;
 
@@ -167,11 +167,11 @@ TEST_SUITE("Receiver") {
 
         // Receive first fragment
         auto result1 = receiver.receive(fragments[0].data(), fragments[0].size(), 0);
-        CHECK(result1 == efp::Result::Ok);
+        CHECK(result1 == efp::Result::OK);
 
         // Send same fragment again - should be detected as duplicate
         auto result2 = receiver.receive(fragments[0].data(), fragments[0].size(), 0);
-        CHECK(result2 == efp::Result::DuplicateFragment);
+        CHECK(result2 == efp::Result::DUPLICATE_FRAGMENT);
     }
 
     TEST_CASE("Frame timeout marks frame as broken") {
@@ -206,7 +206,7 @@ TEST_SUITE("Receiver") {
         REQUIRE(waitFor([&]{ return received.load(); }, std::chrono::milliseconds(200)));
         REQUIRE(capturedFrame != nullptr);
 
-        CHECK(capturedFrame->broken);  // Should be marked as broken
+        CHECK(capturedFrame->mBroken);  // Should be marked as broken
     }
 
     TEST_CASE("Source ID is passed through") {
@@ -217,7 +217,7 @@ TEST_SUITE("Receiver") {
         uint8_t capturedSourceId = 0;
 
         receiver.setCallback([&](efp::SuperFramePtr frame) {
-            capturedSourceId = frame->sourceId;
+            capturedSourceId = frame->mSourceId;
             received = true;
         });
 
@@ -234,7 +234,7 @@ TEST_SUITE("Receiver") {
 
     TEST_CASE("Run-to-completion mode works without threads") {
         efp::Sender sender(MTU);
-        efp::Receiver receiver(100, 0, efp::ReceiverMode::RunToCompletion);
+        efp::Receiver receiver(100, 0, efp::ReceiverMode::RUN_TO_COMPLETION);
 
         bool received = false;
         efp::SuperFramePtr capturedFrame;
@@ -258,8 +258,8 @@ TEST_SUITE("Receiver") {
 
         CHECK(received);
         REQUIRE(capturedFrame != nullptr);
-        CHECK(capturedFrame->size == 100);
-        CHECK(!capturedFrame->broken);
+        CHECK(capturedFrame->mSize == 100);
+        CHECK(!capturedFrame->mBroken);
     }
 
 }

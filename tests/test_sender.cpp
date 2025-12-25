@@ -27,9 +27,9 @@ TEST_SUITE("Sender") {
 
         auto result = sender.send(payload, 0x01, 1000, 1000, 0, 1);
 
-        CHECK(result == efp::Result::Ok);
+        CHECK(result == efp::Result::OK);
         REQUIRE(fragments.size() == 1);
-        CHECK((fragments[0][0] & 0x0F) == static_cast<uint8_t>(efp::FrameType::Type2));
+        CHECK((fragments[0][0] & 0x0F) == static_cast<uint8_t>(efp::FrameType::TYPE2));
     }
 
     TEST_CASE("Packet exactly MTU - Type2 header size results in single Type2 frame") {
@@ -45,9 +45,9 @@ TEST_SUITE("Sender") {
 
         auto result = sender.send(payload, 0x01, 1000, 1000, 0, 1);
 
-        CHECK(result == efp::Result::Ok);
+        CHECK(result == efp::Result::OK);
         REQUIRE(fragments.size() == 1);
-        CHECK((fragments[0][0] & 0x0F) == static_cast<uint8_t>(efp::FrameType::Type2));
+        CHECK((fragments[0][0] & 0x0F) == static_cast<uint8_t>(efp::FrameType::TYPE2));
         CHECK(fragments[0].size() == MTU);
     }
 
@@ -66,13 +66,13 @@ TEST_SUITE("Sender") {
 
         auto result = sender.send(payload, 0x01, 1000, 1000, 0, 1);
 
-        CHECK(result == efp::Result::Ok);
+        CHECK(result == efp::Result::OK);
         REQUIRE(fragments.size() == 2);
 
         // First fragment should be Type1
-        CHECK((fragments[0][0] & 0x0F) == static_cast<uint8_t>(efp::FrameType::Type1));
+        CHECK((fragments[0][0] & 0x0F) == static_cast<uint8_t>(efp::FrameType::TYPE1));
         // Last fragment should be Type2
-        CHECK((fragments[1][0] & 0x0F) == static_cast<uint8_t>(efp::FrameType::Type2));
+        CHECK((fragments[1][0] & 0x0F) == static_cast<uint8_t>(efp::FrameType::TYPE2));
     }
 
     TEST_CASE("Multiple large packets get sequential superframe numbers") {
@@ -80,9 +80,9 @@ TEST_SUITE("Sender") {
 
         std::vector<uint16_t> superFrameNos;
         sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-            if ((data[0] & 0x0F) == static_cast<uint8_t>(efp::FrameType::Type2)) {
+            if ((data[0] & 0x0F) == static_cast<uint8_t>(efp::FrameType::TYPE2)) {
                 auto* header = reinterpret_cast<const efp::FrameType2*>(data);
-                superFrameNos.push_back(header->superFrameNo);
+                superFrameNos.push_back(header->mSuperFrameNo);
             }
         });
 
@@ -107,9 +107,9 @@ TEST_SUITE("Sender") {
         });
 
         std::vector<uint8_t> payload(100);
-        sender.send(payload, 0x01, 1000, 1000, 0, 1, efp::Flags::InlinePayload);
+        sender.send(payload, 0x01, 1000, 1000, 0, 1, efp::Flags::INLINE_PAYLOAD);
 
-        CHECK(capturedFlags == efp::Flags::InlinePayload);
+        CHECK(capturedFlags == efp::Flags::INLINE_PAYLOAD);
     }
 
     TEST_CASE("DTS-PTS difference is calculated correctly") {
@@ -118,7 +118,7 @@ TEST_SUITE("Sender") {
         uint32_t capturedDiff = 0;
         sender.setCallback([&](const uint8_t* data, size_t, uint8_t) {
             auto* header = reinterpret_cast<const efp::FrameType2*>(data);
-            capturedDiff = header->dtsPtsDiff;
+            capturedDiff = header->mDtsPtsDiff;
         });
 
         std::vector<uint8_t> payload(100);
@@ -164,7 +164,7 @@ TEST_SUITE("Sender") {
         std::vector<uint8_t> payload(50);
         auto result = sender.send(payload, 0x01, 1000, 1000, 0, 1);
 
-        CHECK(result == efp::Result::Ok);
+        CHECK(result == efp::Result::OK);
         // Should still work with enforced minimum MTU
         CHECK(!fragments.empty());
     }
@@ -173,11 +173,11 @@ TEST_SUITE("Sender") {
         efp::Sender sender(MTU);
 
         auto result = sender.send(nullptr, 0, 0x01, 1000, 1000, 0, 1);
-        CHECK(result == efp::Result::InvalidParameter);
+        CHECK(result == efp::Result::INVALID_PARAMETER);
 
         std::vector<uint8_t> empty;
         result = sender.send(empty, 0x01, 1000, 1000, 0, 1);
-        CHECK(result == efp::Result::InvalidParameter);
+        CHECK(result == efp::Result::INVALID_PARAMETER);
     }
 
 }

@@ -51,9 +51,9 @@ TEST_SUITE("Edge Cases") {
         REQUIRE(waitFor([&]{ return received.load(); }));
         REQUIRE(capturedFrame != nullptr);
 
-        CHECK(capturedFrame->size == 1);
-        CHECK(capturedFrame->data[0] == 0x42);
-        CHECK(!capturedFrame->broken);
+        CHECK(capturedFrame->mSize == 1);
+        CHECK(capturedFrame->mpData[0] == 0x42);
+        CHECK(!capturedFrame->mBroken);
     }
 
     TEST_CASE("Maximum uint32 values for PTS-DTS difference") {
@@ -81,8 +81,8 @@ TEST_SUITE("Edge Cases") {
         REQUIRE(waitFor([&]{ return received.load(); }));
         REQUIRE(capturedFrame != nullptr);
 
-        CHECK(capturedFrame->pts == pts);
-        CHECK(capturedFrame->dts == dts);
+        CHECK(capturedFrame->mPts == pts);
+        CHECK(capturedFrame->mDts == dts);
     }
 
     TEST_CASE("SuperFrame number wrapping (16-bit overflow)") {
@@ -92,7 +92,7 @@ TEST_SUITE("Edge Cases") {
         std::atomic<int> receivedCount{0};
 
         receiver.setCallback([&](efp::SuperFramePtr frame) {
-            if (!frame->broken) {
+            if (!frame->mBroken) {
                 receivedCount++;
             }
         });
@@ -108,7 +108,7 @@ TEST_SUITE("Edge Cases") {
         // the sender handles the wrapping correctly by checking it doesn't crash
         for (int i = 0; i < 100; i++) {
             auto result = sender.send(payload, 0x01, i, i, 0, 1);
-            CHECK(result == efp::Result::Ok);
+            CHECK(result == efp::Result::OK);
         }
 
         REQUIRE(waitFor([&]{ return receivedCount.load() == 100; }));
@@ -120,7 +120,7 @@ TEST_SUITE("Edge Cases") {
         std::vector<uint8_t> invalidPacket = {0x0F, 0x00, 0x00, 0x00};  // Invalid type 15
         auto result = receiver.receive(invalidPacket);
 
-        CHECK(result == efp::Result::InvalidParameter);
+        CHECK(result == efp::Result::INVALID_PARAMETER);
     }
 
     TEST_CASE("Receive with packet too small for header") {
@@ -130,7 +130,7 @@ TEST_SUITE("Edge Cases") {
         std::vector<uint8_t> tooSmall = {0x01, 0x00, 0x00, 0x00};
         auto result = receiver.receive(tooSmall);
 
-        CHECK(result == efp::Result::FrameSizeMismatch);
+        CHECK(result == efp::Result::FRAME_SIZE_MISMATCH);
     }
 
     TEST_CASE("Fragments arriving for already-delivered frame") {
@@ -164,7 +164,7 @@ TEST_SUITE("Edge Cases") {
         // Now send remaining fragments - should be rejected as too old
         for (size_t i = 1; i < fragments.size(); i++) {
             auto result = receiver.receive(fragments[i].data(), fragments[i].size(), 0);
-            CHECK(result == efp::Result::FragmentTooOld);
+            CHECK(result == efp::Result::FRAGMENT_TOO_OLD);
         }
     }
 
@@ -184,7 +184,7 @@ TEST_SUITE("Edge Cases") {
 
         // Send with inline payload flag but no embedded data
         std::vector<uint8_t> payload(100);
-        sender.send(payload, 0x01, 1000, 1000, 0, 1, efp::Flags::InlinePayload);
+        sender.send(payload, 0x01, 1000, 1000, 0, 1, efp::Flags::INLINE_PAYLOAD);
 
         REQUIRE(waitFor([&]{ return received.load(); }));
     }
@@ -237,7 +237,7 @@ TEST_SUITE("Edge Cases") {
         sender.send(payload, 0x01, 1000, 1000, UINT32_MAX, 1);
 
         REQUIRE(waitFor([&]{ return received.load(); }));
-        CHECK(capturedFrame->payloadCode == UINT32_MAX);
+        CHECK(capturedFrame->mPayloadCode == UINT32_MAX);
     }
 
     TEST_CASE("PTS UINT64_MAX is preserved") {
@@ -260,8 +260,8 @@ TEST_SUITE("Edge Cases") {
         sender.send(payload, 0x01, UINT64_MAX, UINT64_MAX, 0, 1);
 
         REQUIRE(waitFor([&]{ return received.load(); }));
-        CHECK(capturedFrame->pts == UINT64_MAX);
-        CHECK(capturedFrame->dts == UINT64_MAX);
+        CHECK(capturedFrame->mPts == UINT64_MAX);
+        CHECK(capturedFrame->mDts == UINT64_MAX);
     }
 
     TEST_CASE("Receiver stop is idempotent") {
