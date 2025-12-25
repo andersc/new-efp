@@ -47,7 +47,7 @@ TEST_SUITE("Lifecycle") {
             efp::Receiver receiver(50, 20);
 
             sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-                receiver.receive(data, size, 0);
+                (void)receiver.receive(data, size, 0);
             });
 
             receiver.setCallback([&](efp::SuperFramePtr frame) {
@@ -82,7 +82,7 @@ TEST_SUITE("Lifecycle") {
             efp::Receiver receiver(50, 20);
 
             sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-                receiver.receive(data, size, 0);
+                (void)receiver.receive(data, size, 0);
             });
 
             receiver.setCallback([&](efp::SuperFramePtr frame) {
@@ -161,11 +161,11 @@ TEST_SUITE("Lifecycle") {
             });
 
             sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-                receiver.receive(data, size, 0);
+                (void)receiver.receive(data, size, 0);
             });
 
             std::vector<uint8_t> payload(1000);
-            sender.send(payload, 0x01, 1000, 1000, 0, 1);
+            (void)sender.send(payload, 0x01, 1000, 1000, 0, 1);
 
             REQUIRE(waitFor([&]() { return received.load(); }));
         }
@@ -181,11 +181,11 @@ TEST_SUITE("Lifecycle") {
             });
 
             sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-                receiver.receive(data, size, 0);
+                (void)receiver.receive(data, size, 0);
             });
 
             std::vector<uint8_t> payload(1000);
-            sender.send(payload, 0x01, 1000, 1000, 0, 1);
+            (void)sender.send(payload, 0x01, 1000, 1000, 0, 1);
 
             REQUIRE(waitFor([&]() { return received.load(); }));
         }
@@ -201,11 +201,11 @@ TEST_SUITE("Lifecycle") {
             });
 
             sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-                receiver.receive(data, size, 0);
+                (void)receiver.receive(data, size, 0);
             });
 
             std::vector<uint8_t> payload(1000);
-            sender.send(payload, 0x01, 1000, 1000, 0, 1);
+            (void)sender.send(payload, 0x01, 1000, 1000, 0, 1);
 
             REQUIRE(waitFor([&]() { return received.load(); }));
         }
@@ -227,7 +227,7 @@ TEST_SUITE("Lifecycle") {
 
         sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
             std::lock_guard<std::mutex> lock(receiverMutex);
-            receiver.receive(data, size, 0);
+            (void)receiver.receive(data, size, 0);
         });
 
         constexpr int numThreads = 4;
@@ -238,7 +238,7 @@ TEST_SUITE("Lifecycle") {
             threads.emplace_back([&, t]() {
                 std::vector<uint8_t> payload(500);
                 for (int i = 0; i < framesPerThread; i++) {
-                    sender.send(payload, 0x01, t * 1000 + i, t * 1000 + i, 0,
+                    (void)sender.send(payload, 0x01, t * 1000 + i, t * 1000 + i, 0,
                                static_cast<uint8_t>(t + 1));
                 }
             });
@@ -269,7 +269,7 @@ TEST_SUITE("Lifecycle") {
             });
 
             sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-                receiver->receive(data, size, 0);
+                (void)receiver->receive(data, size, 0);
             });
 
             // Start sending in background
@@ -278,7 +278,7 @@ TEST_SUITE("Lifecycle") {
                 int i = 0;
                 while (!stopSending.load()) {
                     int idx = i++;
-                    sender.send(payload, 0x01, idx, idx, 0, 1);
+                    (void)sender.send(payload, 0x01, idx, idx, 0, 1);
                     std::this_thread::sleep_for(std::chrono::microseconds(100));
                 }
             });
@@ -327,11 +327,11 @@ TEST_SUITE("Lifecycle") {
         });
 
         sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-            receiver.receive(data, size, 0);
+            (void)receiver.receive(data, size, 0);
         });
 
         std::vector<uint8_t> payload(100);
-        sender.send(payload, 0x01, 1000, 1000, 0, 1);
+        (void)sender.send(payload, 0x01, 1000, 1000, 0, 1);
 
         REQUIRE(waitFor([&]() { return received.load() == 1; }));
 
@@ -358,13 +358,13 @@ TEST_SUITE("Lifecycle") {
         });
 
         sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-            receiver.receive(data, size, 0);
+            (void)receiver.receive(data, size, 0);
         });
 
         // Send multiple frames
         std::vector<uint8_t> payload(100);
         for (int i = 0; i < 10; i++) {
-            sender.send(payload, 0x01, i, i, 0, 1);
+            (void)sender.send(payload, 0x01, i, i, 0, 1);
         }
 
         // All frames should be delivered synchronously in run-to-completion mode

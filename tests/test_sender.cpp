@@ -89,7 +89,7 @@ TEST_SUITE("Sender") {
         std::vector<uint8_t> payload(100);
 
         for (int i = 0; i < 5; i++) {
-            sender.send(payload, 0x01, 1000 + i, 1000 + i, 0, 1);
+            (void)sender.send(payload, 0x01, 1000 + i, 1000 + i, 0, 1);
         }
 
         REQUIRE(superFrameNos.size() == 5);
@@ -107,7 +107,7 @@ TEST_SUITE("Sender") {
         });
 
         std::vector<uint8_t> payload(100);
-        sender.send(payload, 0x01, 1000, 1000, 0, 1, efp::Flags::INLINE_PAYLOAD);
+        (void)sender.send(payload, 0x01, 1000, 1000, 0, 1, efp::Flags::INLINE_PAYLOAD);
 
         CHECK(capturedFlags == efp::Flags::INLINE_PAYLOAD);
     }
@@ -124,17 +124,17 @@ TEST_SUITE("Sender") {
         std::vector<uint8_t> payload(100);
 
         SUBCASE("PTS == DTS results in diff of 0") {
-            sender.send(payload, 0x01, 1000, 1000, 0, 1);
+            (void)sender.send(payload, 0x01, 1000, 1000, 0, 1);
             CHECK(capturedDiff == 0);
         }
 
         SUBCASE("PTS > DTS results in correct diff") {
-            sender.send(payload, 0x01, 1500, 1000, 0, 1);
+            (void)sender.send(payload, 0x01, 1500, 1000, 0, 1);
             CHECK(capturedDiff == 500);
         }
 
         SUBCASE("No DTS results in UINT32_MAX") {
-            sender.send(payload, 0x01, 1000, UINT64_MAX, 0, 1);
+            (void)sender.send(payload, 0x01, 1000, UINT64_MAX, 0, 1);
             CHECK(capturedDiff == UINT32_MAX);
         }
     }
@@ -148,7 +148,7 @@ TEST_SUITE("Sender") {
         });
 
         std::vector<uint8_t> payload(100);
-        sender.send(payload, 0x01, 1000, 1000, 0, 42);
+        (void)sender.send(payload, 0x01, 1000, 1000, 0, 42);
 
         CHECK(capturedStreamId == 42);
     }

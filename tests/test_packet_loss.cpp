@@ -232,7 +232,7 @@ TEST_SUITE("Packet Loss") {
             });
 
             // Should not crash
-            receiver.receive(garbage.data(), garbage.size(), 0);
+            (void)receiver.receive(garbage.data(), garbage.size(), 0);
         }
 
         CHECK(true);  // If we get here without crash, success
@@ -287,7 +287,7 @@ TEST_SUITE("Packet Loss") {
                     reorderBuffer.push_back(packet);
                     std::shuffle(reorderBuffer.begin(), reorderBuffer.end(), gen);
                     for (auto& p : reorderBuffer) {
-                        receiver.receive(p.data(), p.size(), 0);
+                        (void)receiver.receive(p.data(), p.size(), 0);
                     }
                     reorderBuffer.clear();
                     return;
@@ -297,7 +297,7 @@ TEST_SUITE("Packet Loss") {
                 }
             }
 
-            receiver.receive(packet.data(), packet.size(), 0);
+            (void)receiver.receive(packet.data(), packet.size(), 0);
         });
 
         receiver.setCallback([&](efp::SuperFramePtr frame) {
@@ -323,7 +323,7 @@ TEST_SUITE("Packet Loss") {
                 return static_cast<uint8_t>(n++);
             });
 
-            sender.send(mydata, 0x83, i + 1000, i, 0, 1);
+            (void)sender.send(mydata, 0x83, i + 1000, i, 0, 1);
         }
 
         REQUIRE(waitFor([&]() {
@@ -350,7 +350,7 @@ TEST_SUITE("Packet Loss") {
             if (fragmentNumber == 2 || fragmentNumber == 3) {
                 return;
             }
-            receiver.receive(data, size, 0);
+            (void)receiver.receive(data, size, 0);
         });
 
         receiver.setCallback([&](efp::SuperFramePtr frame) {
@@ -380,7 +380,7 @@ TEST_SUITE("Packet Loss") {
         sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
             // Only send Type2
             if ((data[0] & 0x0f) == static_cast<uint8_t>(efp::FrameType::TYPE2)) {
-                receiver.receive(data, size, 0);
+                (void)receiver.receive(data, size, 0);
             }
         });
 
@@ -419,7 +419,7 @@ TEST_SUITE("Packet Loss") {
 
         // Large payload to generate multiple fragments
         std::vector<uint8_t> payload(MTU * 3);
-        sender.send(payload, 0x01, 1000, 1000, 0, 1);
+        (void)sender.send(payload, 0x01, 1000, 1000, 0, 1);
 
         // Send each fragment twice
         for (auto& frag : fragments) {
@@ -453,10 +453,10 @@ TEST_SUITE("Packet Loss") {
         });
 
         std::vector<uint8_t> payload(MTU * 3);
-        sender.send(payload, 0x01, 1000, 1000, 0, 1);
+        (void)sender.send(payload, 0x01, 1000, 1000, 0, 1);
 
         // Only send first fragment
-        receiver.receive(fragments[0].data(), fragments[0].size(), 0);
+        (void)receiver.receive(fragments[0].data(), fragments[0].size(), 0);
 
         // Wait for timeout
         REQUIRE(waitFor([&]() { return received.load(); }, std::chrono::milliseconds(200)));
@@ -481,10 +481,10 @@ TEST_SUITE("Packet Loss") {
         });
 
         std::vector<uint8_t> payload(MTU * 3);
-        sender.send(payload, 0x01, 1000, 1000, 0, 1);
+        (void)sender.send(payload, 0x01, 1000, 1000, 0, 1);
 
         // Send only first fragment
-        receiver.receive(fragments[0].data(), fragments[0].size(), 0);
+        (void)receiver.receive(fragments[0].data(), fragments[0].size(), 0);
 
         // Wait for timeout delivery
         REQUIRE(waitFor([&]() { return receivedCount.load() == 1; }, std::chrono::milliseconds(200)));

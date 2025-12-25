@@ -472,7 +472,7 @@ TEST_SUITE("Fragment Ordering") {
 
         // Send shuffled fragments
         for (auto& frag : allFragments) {
-            receiver.receive(frag.data(), frag.size(), 0);
+            (void)receiver.receive(frag.data(), frag.size(), 0);
         }
 
         REQUIRE(waitFor([&]() { return dataReceived.load(); }));

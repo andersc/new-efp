@@ -42,11 +42,11 @@ TEST_SUITE("Edge Cases") {
         });
 
         sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-            receiver.receive(data, size, 0);
+            (void)receiver.receive(data, size, 0);
         });
 
         std::vector<uint8_t> payload = {0x42};
-        sender.send(payload, 0x01, 1000, 1000, 0, 1);
+        (void)sender.send(payload, 0x01, 1000, 1000, 0, 1);
 
         REQUIRE(waitFor([&]{ return received.load(); }));
         REQUIRE(capturedFrame != nullptr);
@@ -69,14 +69,14 @@ TEST_SUITE("Edge Cases") {
         });
 
         sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-            receiver.receive(data, size, 0);
+            (void)receiver.receive(data, size, 0);
         });
 
         std::vector<uint8_t> payload(100);
         uint64_t pts = 5000000000ULL;  // Large enough to avoid underflow
         uint64_t dts = pts - (UINT32_MAX - 1);  // Maximum valid difference
 
-        sender.send(payload, 0x01, pts, dts, 0, 1);
+        (void)sender.send(payload, 0x01, pts, dts, 0, 1);
 
         REQUIRE(waitFor([&]{ return received.load(); }));
         REQUIRE(capturedFrame != nullptr);
@@ -98,7 +98,7 @@ TEST_SUITE("Edge Cases") {
         });
 
         sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-            receiver.receive(data, size, 0);
+            (void)receiver.receive(data, size, 0);
         });
 
         std::vector<uint8_t> payload(100);
@@ -151,12 +151,12 @@ TEST_SUITE("Edge Cases") {
         // Create fragmented payload
         size_t payloadSize = MTU * 3;
         std::vector<uint8_t> payload(payloadSize);
-        sender.send(payload, 0x01, 1000, 1000, 0, 1);
+        (void)sender.send(payload, 0x01, 1000, 1000, 0, 1);
 
         REQUIRE(fragments.size() >= 3);
 
         // Send only first fragment
-        receiver.receive(fragments[0].data(), fragments[0].size(), 0);
+        (void)receiver.receive(fragments[0].data(), fragments[0].size(), 0);
 
         // Wait for timeout
         REQUIRE(waitFor([&]{ return receivedCount.load() == 1; }, std::chrono::milliseconds(200)));
@@ -179,12 +179,12 @@ TEST_SUITE("Edge Cases") {
         });
 
         sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-            receiver.receive(data, size, 0);
+            (void)receiver.receive(data, size, 0);
         });
 
         // Send with inline payload flag but no embedded data
         std::vector<uint8_t> payload(100);
-        sender.send(payload, 0x01, 1000, 1000, 0, 1, efp::Flags::INLINE_PAYLOAD);
+        (void)sender.send(payload, 0x01, 1000, 1000, 0, 1, efp::Flags::INLINE_PAYLOAD);
 
         REQUIRE(waitFor([&]{ return received.load(); }));
     }
@@ -200,7 +200,7 @@ TEST_SUITE("Edge Cases") {
         });
 
         sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-            receiver.receive(data, size, 0);
+            (void)receiver.receive(data, size, 0);
         });
 
         std::vector<uint8_t> payload(50);
@@ -208,7 +208,7 @@ TEST_SUITE("Edge Cases") {
         // Test a sample of stream IDs (skip 0 for now)
         std::vector<uint8_t> testStreams = {1, 127, 128, 254, 255};
         for (uint8_t streamId : testStreams) {
-            sender.send(payload, 0x01, 1000, 1000, 0, streamId);
+            (void)sender.send(payload, 0x01, 1000, 1000, 0, streamId);
         }
 
         REQUIRE(waitFor([&]{ return receivedCount.load() == static_cast<int>(testStreams.size()); }));
@@ -230,11 +230,11 @@ TEST_SUITE("Edge Cases") {
         });
 
         sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-            receiver.receive(data, size, 0);
+            (void)receiver.receive(data, size, 0);
         });
 
         std::vector<uint8_t> payload(100);
-        sender.send(payload, 0x01, 1000, 1000, UINT32_MAX, 1);
+        (void)sender.send(payload, 0x01, 1000, 1000, UINT32_MAX, 1);
 
         REQUIRE(waitFor([&]{ return received.load(); }));
         CHECK(capturedFrame->mPayloadCode == UINT32_MAX);
@@ -253,11 +253,11 @@ TEST_SUITE("Edge Cases") {
         });
 
         sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-            receiver.receive(data, size, 0);
+            (void)receiver.receive(data, size, 0);
         });
 
         std::vector<uint8_t> payload(100);
-        sender.send(payload, 0x01, UINT64_MAX, UINT64_MAX, 0, 1);
+        (void)sender.send(payload, 0x01, UINT64_MAX, UINT64_MAX, 0, 1);
 
         REQUIRE(waitFor([&]{ return received.load(); }));
         CHECK(capturedFrame->mPts == UINT64_MAX);

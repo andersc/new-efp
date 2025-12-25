@@ -227,14 +227,14 @@ TEST_SUITE("Basic Functionality") {
         });
 
         lSender.setCallback([&](const uint8_t* apData, size_t aSize, uint8_t) {
-            lReceiver.receive(apData, aSize, 0);
+            (void)lReceiver.receive(apData, aSize, 0);
         });
 
         std::vector<uint8_t> lPayload(50);
 
         // Test all 256 payload types
         for (int lI = 0; lI < 256; lI++) {
-            lSender.send(lPayload, (uint8_t)(lI), lI, lI, 0, 1);
+            (void)lSender.send(lPayload, (uint8_t)(lI), lI, lI, 0, 1);
         }
 
         REQUIRE(waitFor([&]() { return lReceived.load() == 256; }, std::chrono::milliseconds(5000)));
@@ -258,14 +258,14 @@ TEST_SUITE("Basic Functionality") {
         });
 
         lSender.setCallback([&](const uint8_t* apData, size_t aSize, uint8_t) {
-            lReceiver.receive(apData, aSize, 0);
+            (void)lReceiver.receive(apData, aSize, 0);
         });
 
         std::vector<uint8_t> lPayload(50);
 
         // Test stream IDs 1-255 (0 is reserved)
         for (int lI = 1; lI <= 255; lI++) {
-            lSender.send(lPayload, 0x01, lI, lI, 0, (uint8_t)(lI));
+            (void)lSender.send(lPayload, 0x01, lI, lI, 0, (uint8_t)(lI));
         }
 
         REQUIRE(waitFor([&]() { return lReceived.load() == 255; }, std::chrono::milliseconds(5000)));
@@ -290,7 +290,7 @@ TEST_SUITE("Basic Functionality") {
         });
 
         lSender.setCallback([&](const uint8_t* apData, size_t aSize, uint8_t) {
-            lReceiver.receive(apData, aSize, 0);
+            (void)lReceiver.receive(apData, aSize, 0);
         });
 
         std::vector<uint8_t> lPayload(100);
@@ -299,7 +299,7 @@ TEST_SUITE("Basic Functionality") {
         auto lAnxbCode = EFP_CODE('A', 'N', 'X', 'B');
         CHECK(lAnxbCode == 0x414E5842);  // 'A'<<24 | 'N'<<16 | 'X'<<8 | 'B'
 
-        lSender.send(lPayload, 0x83, 1000, 1000, lAnxbCode, 1);
+        (void)lSender.send(lPayload, 0x83, 1000, 1000, lAnxbCode, 1);
 
         REQUIRE(waitFor([&]() { return lReceived.load(); }));
         CHECK(lCapturedCode == lAnxbCode);
@@ -321,12 +321,12 @@ TEST_SUITE("Basic Functionality") {
         });
 
         lSender.setCallback([&](const uint8_t* apData, size_t aSize, uint8_t) {
-            lReceiver.receive(apData, aSize, 0);
+            (void)lReceiver.receive(apData, aSize, 0);
         });
 
         std::vector<uint8_t> lPayload(1000);
 
-        lSender.send(lPayload,
+        (void)lSender.send(lPayload,
                    efp::media::PayloadType::H264,
                    90000, 90000,
                    efp::media::PayloadCode::ANXB,
@@ -352,11 +352,11 @@ TEST_SUITE("Basic Functionality") {
             });
 
             lSender.setCallback([&](const uint8_t* apData, size_t aSize, uint8_t) {
-                lReceiver.receive(apData, aSize, 0);
+                (void)lReceiver.receive(apData, aSize, 0);
             });
 
             std::vector<uint8_t> lPayload(100);
-            lSender.send(lPayload, 0x01, 1000, 1000, 0, 1);
+            (void)lSender.send(lPayload, 0x01, 1000, 1000, 0, 1);
 
             REQUIRE(waitFor([&]() { return lReceived.load(); }));
         }
@@ -371,11 +371,11 @@ TEST_SUITE("Basic Functionality") {
             });
 
             lSender.setCallback([&](const uint8_t* apData, size_t aSize, uint8_t) {
-                lReceiver.receive(apData, aSize, 0);
+                (void)lReceiver.receive(apData, aSize, 0);
             });
 
             std::vector<uint8_t> lPayload(100);
-            lSender.send(lPayload, 0x01, 2000, 1000, 0, 1);
+            (void)lSender.send(lPayload, 0x01, 2000, 1000, 0, 1);
 
             REQUIRE(waitFor([&]() { return lReceived.load(); }));
         }
@@ -390,11 +390,11 @@ TEST_SUITE("Basic Functionality") {
             });
 
             lSender.setCallback([&](const uint8_t* apData, size_t aSize, uint8_t) {
-                lReceiver.receive(apData, aSize, 0);
+                (void)lReceiver.receive(apData, aSize, 0);
             });
 
             std::vector<uint8_t> lPayload(100);
-            lSender.send(lPayload, 0x01, 1000, UINT64_MAX, 0, 1);
+            (void)lSender.send(lPayload, 0x01, 1000, UINT64_MAX, 0, 1);
 
             REQUIRE(waitFor([&]() { return lReceived.load(); }));
         }
@@ -429,11 +429,11 @@ TEST_SUITE("Basic Functionality") {
         });
 
         lSender.setCallback([&](const uint8_t* apData, size_t aSize, uint8_t) {
-            lReceiver.receive(apData, aSize, 0);
+            (void)lReceiver.receive(apData, aSize, 0);
         });
 
         std::vector<uint8_t> lPayload(100);
-        lSender.send(lPayload, 0x01, 1000, 1000, 0, 1, efp::Flags::INLINE_PAYLOAD);
+        (void)lSender.send(lPayload, 0x01, 1000, 1000, 0, 1, efp::Flags::INLINE_PAYLOAD);
 
         REQUIRE(waitFor([&]() { return lReceived.load(); }));
     }
@@ -453,11 +453,11 @@ TEST_SUITE("Basic Functionality") {
         });
 
         lSender.setCallback([&](const uint8_t* apData, size_t aSize, uint8_t) {
-            lReceiver.receive(apData, aSize, 42);  // Pass source ID
+            (void)lReceiver.receive(apData, aSize, 42);  // Pass source ID
         });
 
         std::vector<uint8_t> lPayload(100);
-        lSender.send(lPayload, 0x01, 1000, 1000, 0, 1);
+        (void)lSender.send(lPayload, 0x01, 1000, 1000, 0, 1);
 
         REQUIRE(waitFor([&]() { return lReceived.load(); }));
     }
@@ -480,12 +480,12 @@ TEST_SUITE("Basic Functionality") {
             });
 
             lSender.setCallback([&](const uint8_t* apData, size_t aSize, uint8_t) {
-                lReceiver.receive(apData, aSize, 0);
+                (void)lReceiver.receive(apData, aSize, 0);
             });
 
             auto lMaxType2Payload = MTU - sizeof(efp::FrameType2);
             std::vector<uint8_t> lPayload(lMaxType2Payload);
-            lSender.send(lPayload, 0x01, 1000, 1000, 0, 1);
+            (void)lSender.send(lPayload, 0x01, 1000, 1000, 0, 1);
 
             REQUIRE(waitFor([&]() { return lReceived.load(); }));
             CHECK(lCapturedSize == lMaxType2Payload);
@@ -497,7 +497,7 @@ TEST_SUITE("Basic Functionality") {
 
             lSender.setCallback([&](const uint8_t* apData, size_t aSize, uint8_t) {
                 lFragmentCount++;
-                lReceiver.receive(apData, aSize, 0);
+                (void)lReceiver.receive(apData, aSize, 0);
             });
 
             lReceiver.setCallback([&](efp::SuperFramePtr apFrame) {
@@ -507,7 +507,7 @@ TEST_SUITE("Basic Functionality") {
 
             auto lPayloadSize = MTU - sizeof(efp::FrameType2) + 1;
             std::vector<uint8_t> lPayload(lPayloadSize);
-            lSender.send(lPayload, 0x01, 1000, 1000, 0, 1);
+            (void)lSender.send(lPayload, 0x01, 1000, 1000, 0, 1);
 
             REQUIRE(waitFor([&]() { return lReceived.load(); }));
             CHECK(lFragmentCount == 2);  // Should be Type1 + Type2

@@ -100,14 +100,14 @@ TEST_SUITE("Stress Tests") {
         });
 
         lSender.setCallback([&](const uint8_t* apData, size_t aSize, uint8_t) {
-            lReceiver.receive(apData, aSize, 0);
+            (void)lReceiver.receive(apData, aSize, 0);
             lReceiver.poll();  // Immediately deliver completed frames
         });
 
         std::vector<uint8_t> lPayload(100);
 
         for (uint64_t lI = 0; lI < FRAME_COUNT; lI++) {
-            lSender.send(lPayload, 0x01, lI, lI, 0, 1);
+            (void)lSender.send(lPayload, 0x01, lI, lI, 0, 1);
         }
 
         // All frames should be delivered immediately in RTC mode
@@ -186,14 +186,14 @@ TEST_SUITE("Stress Tests") {
         });
 
         sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-            receiver.receive(data, size, 0);
+            (void)receiver.receive(data, size, 0);
         });
 
         std::vector<uint8_t> payload(500);
 
         for (int frame = 0; frame < 1000; frame++) {
             for (uint8_t stream = 1; stream <= 10; stream++) {
-                sender.send(payload, 0x01, frame, frame, 0, stream);
+                (void)sender.send(payload, 0x01, frame, frame, 0, stream);
             }
         }
 
@@ -228,7 +228,7 @@ TEST_SUITE("Stress Tests") {
         });
 
         sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-            receiver.receive(data, size, 0);
+            (void)receiver.receive(data, size, 0);
             receiver.poll();  // Immediately deliver completed frames
         });
 
@@ -264,7 +264,7 @@ TEST_SUITE("Stress Tests") {
         });
 
         sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-            receiver.receive(data, size, 0);
+            (void)receiver.receive(data, size, 0);
         });
 
         // Calculate size that requires ~8000 fragments
@@ -325,13 +325,13 @@ TEST_SUITE("Stress Tests") {
         });
 
         sender1.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-            receiver1.receive(data, size, 1);
+            (void)receiver1.receive(data, size, 1);
         });
         sender2.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-            receiver2.receive(data, size, 2);
+            (void)receiver2.receive(data, size, 2);
         });
         sender3.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-            receiver3.receive(data, size, 3);
+            (void)receiver3.receive(data, size, 3);
         });
 
         std::vector<uint8_t> payload(500);
@@ -340,17 +340,17 @@ TEST_SUITE("Stress Tests") {
         // Launch 3 threads
         std::thread t1([&]() {
             for (int i = 0; i < framesPerSender; i++) {
-                sender1.send(payload, 0x01, i, i, 0, 1);
+                (void)sender1.send(payload, 0x01, i, i, 0, 1);
             }
         });
         std::thread t2([&]() {
             for (int i = 0; i < framesPerSender; i++) {
-                sender2.send(payload, 0x02, i, i, 0, 2);
+                (void)sender2.send(payload, 0x02, i, i, 0, 2);
             }
         });
         std::thread t3([&]() {
             for (int i = 0; i < framesPerSender; i++) {
-                sender3.send(payload, 0x03, i, i, 0, 3);
+                (void)sender3.send(payload, 0x03, i, i, 0, 3);
             }
         });
 
@@ -382,12 +382,12 @@ TEST_SUITE("Stress Tests") {
             });
 
             sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-                receiver.receive(data, size, 0);
+                (void)receiver.receive(data, size, 0);
             });
 
             std::vector<uint8_t> payload(1000);
             for (int i = 0; i < 10; i++) {
-                sender.send(payload, 0x01, i, i, 0, 1);
+                (void)sender.send(payload, 0x01, i, i, 0, 1);
             }
 
             waitFor([&]() { return received.load() == 10; }, std::chrono::milliseconds(500));
@@ -410,14 +410,14 @@ TEST_SUITE("Stress Tests") {
         });
 
         sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-            receiver.receive(data, size, 0);
+            (void)receiver.receive(data, size, 0);
         });
 
         std::vector<uint8_t> payload(1000);
         constexpr size_t numFrames = 10000;
 
         for (size_t i = 0; i < numFrames; i++) {
-            sender.send(payload, 0x01, i, i, 0, 1);
+            (void)sender.send(payload, 0x01, i, i, 0, 1);
         }
 
         REQUIRE(waitFor([&]() {

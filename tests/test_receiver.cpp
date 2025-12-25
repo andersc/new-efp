@@ -42,13 +42,13 @@ TEST_SUITE("Receiver") {
         });
 
         sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-            receiver.receive(data, size, 0);
+            (void)receiver.receive(data, size, 0);
         });
 
         std::vector<uint8_t> payload(100);
         std::iota(payload.begin(), payload.end(), 0);
 
-        sender.send(payload, 0x42, 1000, 900, 0xDEADBEEF, 5);
+        (void)sender.send(payload, 0x42, 1000, 900, 0xDEADBEEF, 5);
 
         REQUIRE(waitFor([&]{ return received.load(); }));
         REQUIRE(capturedFrame != nullptr);
@@ -80,7 +80,7 @@ TEST_SUITE("Receiver") {
         });
 
         sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-            receiver.receive(data, size, 0);
+            (void)receiver.receive(data, size, 0);
         });
 
         // Large payload requiring multiple fragments
@@ -90,7 +90,7 @@ TEST_SUITE("Receiver") {
             return static_cast<uint8_t>(n++ & 0xFF);
         });
 
-        sender.send(payload, 0x01, 2000, 1900, 0, 1);
+        (void)sender.send(payload, 0x01, 2000, 1900, 0, 1);
 
         REQUIRE(waitFor([&]{ return received.load(); }));
         REQUIRE(capturedFrame != nullptr);
@@ -128,11 +128,11 @@ TEST_SUITE("Receiver") {
             return static_cast<uint8_t>(n++ & 0xFF);
         });
 
-        sender.send(payload, 0x01, 2000, 2000, 0, 1);
+        (void)sender.send(payload, 0x01, 2000, 2000, 0, 1);
 
         // Send in reverse order
         for (auto it = fragments.rbegin(); it != fragments.rend(); ++it) {
-            receiver.receive(it->data(), it->size(), 0);
+            (void)receiver.receive(it->data(), it->size(), 0);
         }
 
         REQUIRE(waitFor([&]{ return received.load(); }));
@@ -160,7 +160,7 @@ TEST_SUITE("Receiver") {
 
         // Use a large payload that requires multiple fragments (Type1 + Type2)
         std::vector<uint8_t> payload(MTU * 2);  // Large enough for fragmentation
-        sender.send(payload, 0x01, 1000, 1000, 0, 1);
+        (void)sender.send(payload, 0x01, 1000, 1000, 0, 1);
 
         // Should have at least 2 fragments
         REQUIRE(fragments.size() >= 2);
@@ -195,11 +195,11 @@ TEST_SUITE("Receiver") {
         size_t payloadSize = MTU * 3;
         std::vector<uint8_t> payload(payloadSize);
 
-        sender.send(payload, 0x01, 2000, 2000, 0, 1);
+        (void)sender.send(payload, 0x01, 2000, 2000, 0, 1);
 
         // Only send first fragment
         if (!fragments.empty()) {
-            receiver.receive(fragments[0].data(), fragments[0].size(), 0);
+            (void)receiver.receive(fragments[0].data(), fragments[0].size(), 0);
         }
 
         // Wait for timeout
@@ -222,11 +222,11 @@ TEST_SUITE("Receiver") {
         });
 
         sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-            receiver.receive(data, size, 123);  // Source ID = 123
+            (void)receiver.receive(data, size, 123);  // Source ID = 123
         });
 
         std::vector<uint8_t> payload(100);
-        sender.send(payload, 0x01, 1000, 1000, 0, 1);
+        (void)sender.send(payload, 0x01, 1000, 1000, 0, 1);
 
         REQUIRE(waitFor([&]{ return received.load(); }));
         CHECK(capturedSourceId == 123);
@@ -245,13 +245,13 @@ TEST_SUITE("Receiver") {
         });
 
         sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-            receiver.receive(data, size, 0);
+            (void)receiver.receive(data, size, 0);
         });
 
         std::vector<uint8_t> payload(100);
         std::iota(payload.begin(), payload.end(), 0);
 
-        sender.send(payload, 0x01, 1000, 1000, 0, 1);
+        (void)sender.send(payload, 0x01, 1000, 1000, 0, 1);
 
         // Must call poll() to process in run-to-completion mode
         receiver.poll();

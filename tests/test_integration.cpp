@@ -45,7 +45,7 @@ TEST_SUITE("Integration") {
         });
 
         sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-            receiver.receive(data, size, 0);
+            (void)receiver.receive(data, size, 0);
         });
 
         constexpr int numFrames = 10;
@@ -53,7 +53,7 @@ TEST_SUITE("Integration") {
             std::vector<uint8_t> payload(100 + i * 50);
             std::fill(payload.begin(), payload.end(), static_cast<uint8_t>(i));
 
-            sender.send(payload, 0x01, 1000 + i, 1000 + i, 0, 1);
+            (void)sender.send(payload, 0x01, 1000 + i, 1000 + i, 0, 1);
         }
 
         REQUIRE(waitFor([&]{ return receivedCount.load() == numFrames; }));
@@ -82,14 +82,14 @@ TEST_SUITE("Integration") {
         });
 
         sender.setCallback([&](const uint8_t* data, size_t size, uint8_t streamId) {
-            receiver.receive(data, size, 0);
+            (void)receiver.receive(data, size, 0);
         });
 
         // Send frames on 3 different streams
         for (int stream = 1; stream <= 3; stream++) {
             for (int i = 0; i < 5; i++) {
                 std::vector<uint8_t> payload(200);
-                sender.send(payload, 0x01, 1000 + i, 1000 + i, 0, static_cast<uint8_t>(stream));
+                (void)sender.send(payload, 0x01, 1000 + i, 1000 + i, 0, static_cast<uint8_t>(stream));
             }
         }
 
@@ -116,7 +116,7 @@ TEST_SUITE("Integration") {
         });
 
         sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-            receiver.receive(data, size, 0);
+            (void)receiver.receive(data, size, 0);
         });
 
         std::mt19937 rng(42);
@@ -130,7 +130,7 @@ TEST_SUITE("Integration") {
             sentSizes.push_back(payloadSize);
 
             std::vector<uint8_t> payload(payloadSize);
-            sender.send(payload, 0x01, i, i, 0, 1);
+            (void)sender.send(payload, 0x01, i, i, 0, 1);
         }
 
         REQUIRE(waitFor([&]{ return receivedCount.load() == numFrames; }));
@@ -156,7 +156,7 @@ TEST_SUITE("Integration") {
         });
 
         sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-            receiver.receive(data, size, 0);
+            (void)receiver.receive(data, size, 0);
         });
 
         // Payload that hits exact boundary
@@ -168,7 +168,7 @@ TEST_SUITE("Integration") {
             payload[i] = static_cast<uint8_t>((i * 7 + 13) & 0xFF);  // Pseudo-random pattern
         }
 
-        sender.send(payload, 0x01, 1000, 1000, 0, 1);
+        (void)sender.send(payload, 0x01, 1000, 1000, 0, 1);
 
         REQUIRE(waitFor([&]{ return received.load(); }));
         REQUIRE(capturedFrame != nullptr);
@@ -194,13 +194,13 @@ TEST_SUITE("Integration") {
         });
 
         sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-            receiver.receive(data, size, 0);
+            (void)receiver.receive(data, size, 0);
         });
 
         // Simulated H.264 NAL unit
         std::vector<uint8_t> nalUnit(5000);
 
-        sender.send(nalUnit,
+        (void)sender.send(nalUnit,
                     efp::media::PayloadType::H264,
                     90000,   // PTS at 90kHz
                     90000,
@@ -227,11 +227,11 @@ TEST_SUITE("Integration") {
         });
 
         sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-            receiver.receive(data, size, 0);
+            (void)receiver.receive(data, size, 0);
         });
 
         std::vector<uint8_t> payload(100);
-        sender.send(payload, 0x01, 1000, 1000, 0, 1);
+        (void)sender.send(payload, 0x01, 1000, 1000, 0, 1);
 
         REQUIRE(waitFor([&]{ return received.load(); }));
     }
@@ -249,14 +249,14 @@ TEST_SUITE("Integration") {
         });
 
         sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-            receiver.receive(data, size, 0);
+            (void)receiver.receive(data, size, 0);
         });
 
         constexpr int numFrames = 1000;
         std::vector<uint8_t> payload(50);
 
         for (int i = 0; i < numFrames; i++) {
-            sender.send(payload, 0x01, i, i, 0, 1);
+            (void)sender.send(payload, 0x01, i, i, 0, 1);
         }
 
         REQUIRE(waitFor([&]{ return receivedCount.load() == numFrames; },

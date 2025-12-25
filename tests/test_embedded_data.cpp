@@ -104,10 +104,10 @@ TEST_SUITE("Embedded Data") {
         });
 
         sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-            receiver.receive(data, size, 0);
+            (void)receiver.receive(data, size, 0);
         });
 
-        sender.send(combined, 0x83, 1000, 1000, EFP_CODE('A', 'N', 'X', 'B'), 1,
+        (void)sender.send(combined, 0x83, 1000, 1000, EFP_CODE('A', 'N', 'X', 'B'), 1,
                    efp::Flags::INLINE_PAYLOAD);
 
         REQUIRE(waitFor([&]() { return received.load(); }));
@@ -331,7 +331,7 @@ TEST_SUITE("Embedded Data") {
             if (fragmentCount == 2) {
                 return;  // Drop second fragment
             }
-            receiver.receive(data, size, 0);
+            (void)receiver.receive(data, size, 0);
         });
 
         receiver.setCallback([&](efp::SuperFramePtr frame) {
@@ -355,7 +355,7 @@ TEST_SUITE("Embedded Data") {
         // Add payload
         combined.resize(FRAME_SIZE, 0xCD);
 
-        sender.send(combined, 0x83, 1000, 1000, 0, 1, efp::Flags::INLINE_PAYLOAD);
+        (void)sender.send(combined, 0x83, 1000, 1000, 0, 1, efp::Flags::INLINE_PAYLOAD);
 
         REQUIRE(waitFor([&]() { return received.load(); }));
     }
@@ -390,7 +390,7 @@ TEST_SUITE("Embedded Data") {
         });
 
         sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-            receiver.receive(data, size, 0);
+            (void)receiver.receive(data, size, 0);
         });
 
         std::vector<uint8_t> combined;
@@ -410,7 +410,7 @@ TEST_SUITE("Embedded Data") {
         // Add some payload
         combined.resize(combined.size() + 500, 0xEE);
 
-        sender.send(combined, 0x01, 1000, 1000, 0, 1, efp::Flags::INLINE_PAYLOAD);
+        (void)sender.send(combined, 0x01, 1000, 1000, 0, 1, efp::Flags::INLINE_PAYLOAD);
 
         REQUIRE(waitFor([&]() { return received.load(); }));
     }
@@ -432,13 +432,13 @@ TEST_SUITE("Embedded Data") {
         });
 
         sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-            receiver.receive(data, size, 0);
+            (void)receiver.receive(data, size, 0);
         });
 
         std::vector<uint8_t> payload(500, 0xAB);
 
         // Set inline payload flag but send regular data
-        sender.send(payload, 0x01, 1000, 1000, 0, 1, efp::Flags::INLINE_PAYLOAD);
+        (void)sender.send(payload, 0x01, 1000, 1000, 0, 1, efp::Flags::INLINE_PAYLOAD);
 
         REQUIRE(waitFor([&]() { return received.load(); }));
     }
