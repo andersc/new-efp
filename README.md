@@ -257,6 +257,16 @@ This project follows a specific naming convention (see `codestyle.txt`):
 
 For static analysis with clang-tidy, see `use_clang_tidy.txt` for recommended configurations and project-specific suppressions.
 
+### Static Analysis
+
+The project passes clang-tidy with the recommended "Quick Code Quality Check" configuration:
+
+```bash
+/opt/homebrew/Cellar/llvm/21.1.7/bin/clang-tidy <file>.cpp \
+    --checks='modernize-use-auto,misc-const-correctness,bugprone-*,performance-*,readability-braces-around-statements,readability-use-std-min-max,-bugprone-easily-swappable-parameters' \
+    -- -std=c++20 -I/path/to/efp
+```
+
 ## Use Cases
 
 - **Video streaming** — Fragment H.264/H.265/AV1 NAL units

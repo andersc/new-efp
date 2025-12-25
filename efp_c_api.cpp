@@ -63,7 +63,9 @@ void efp_sender_destroy(efp_sender_t apSender) {
 }
 
 void efp_sender_set_callback(efp_sender_t apSender, efp_send_callback_t aCallback, void* apCtx) {
-    if (!apSender) return;
+    if (!apSender) {
+        return;
+    }
 
     apSender->mCallback = aCallback;
     apSender->mpCtx = apCtx;
@@ -127,7 +129,9 @@ void efp_receiver_destroy(efp_receiver_t apReceiver) {
 
 void efp_receiver_set_callback(efp_receiver_t apReceiver,
                                 efp_receive_callback_t aCallback, void* apCtx) {
-    if (!apReceiver) return;
+    if (!apReceiver) {
+        return;
+    }
 
     apReceiver->mCallback = aCallback;
     apReceiver->mpCtx = apCtx;
@@ -145,7 +149,9 @@ void efp_receiver_set_callback(efp_receiver_t apReceiver,
                 size_t lOffset = 0;
                 while (lOffset + 3 <= apFrame->mSize) {
                     auto lType = apFrame->mpData[lOffset];
-                    if (lType == 0) break;
+                    if (lType == 0) {
+                        break;
+                    }
 
                     auto lEmbSize = (uint16_t)(apFrame->mpData[lOffset + 1] |
                                               (apFrame->mpData[lOffset + 2] << 8));
@@ -192,7 +198,9 @@ void efp_receiver_set_callback(efp_receiver_t apReceiver,
 
 void efp_receiver_set_embedded_callback(efp_receiver_t apReceiver,
                                          efp_embedded_callback_t aCallback, void* apCtx) {
-    if (!apReceiver) return;
+    if (!apReceiver) {
+        return;
+    }
     apReceiver->mEmbeddedCallback = aCallback;
     // Note: ctx is shared with main callback
     (void)apCtx;
@@ -275,8 +283,12 @@ int16_t efp_extract_embedded_data(const uint8_t* apFrameData, size_t aFrameSize,
     auto lType = apFrameData[0];
     if (lType == 0) {
         // No embedded data
-        if (apPayloadOffsetOut) *apPayloadOffsetOut = 0;
-        if (apEmbeddedSizeOut) *apEmbeddedSizeOut = 0;
+        if (apPayloadOffsetOut) {
+            *apPayloadOffsetOut = 0;
+        }
+        if (apEmbeddedSizeOut) {
+            *apEmbeddedSizeOut = 0;
+        }
         return EFP_OK;
     }
 
@@ -319,7 +331,7 @@ uint64_t efp_init_send(uint64_t aMtu,
 
     efp_sender_set_callback(lpSender, aCallback, apCtx);
 
-    std::lock_guard<std::recursive_mutex> lLock(gHandlesMutex);
+    const std::lock_guard<std::recursive_mutex> lLock(gHandlesMutex);
     auto lHandle = gNextHandle++;
     gSenderHandles[lHandle] = lpSender;
     return lHandle;
@@ -339,14 +351,14 @@ uint64_t efp_init_receive(uint32_t aBucketTimeout, uint32_t aHolTimeout,
     efp_receiver_set_callback(lpReceiver, aCallback, apCtx);
     efp_receiver_set_embedded_callback(lpReceiver, aEmbeddedCallback, apCtx);
 
-    std::lock_guard<std::recursive_mutex> lLock(gHandlesMutex);
+    const std::lock_guard<std::recursive_mutex> lLock(gHandlesMutex);
     auto lHandle = gNextHandle++;
     gReceiverHandles[lHandle] = lpReceiver;
     return lHandle;
 }
 
 int16_t efp_end_send(uint64_t aEfpObject) {
-    std::lock_guard<std::recursive_mutex> lLock(gHandlesMutex);
+    const std::lock_guard<std::recursive_mutex> lLock(gHandlesMutex);
 
     auto lIt = gSenderHandles.find(aEfpObject);
     if (lIt == gSenderHandles.end()) {
@@ -359,7 +371,7 @@ int16_t efp_end_send(uint64_t aEfpObject) {
 }
 
 int16_t efp_end_receive(uint64_t aEfpObject) {
-    std::lock_guard<std::recursive_mutex> lLock(gHandlesMutex);
+    const std::lock_guard<std::recursive_mutex> lLock(gHandlesMutex);
 
     auto lIt = gReceiverHandles.find(aEfpObject);
     if (lIt == gReceiverHandles.end()) {
@@ -378,7 +390,7 @@ int16_t efp_send_data(uint64_t aEfpObject,
                       uint32_t aCode,
                       uint8_t aStreamId,
                       uint8_t aFlags) {
-    std::lock_guard<std::recursive_mutex> lLock(gHandlesMutex);
+    const std::lock_guard<std::recursive_mutex> lLock(gHandlesMutex);
 
     auto lIt = gSenderHandles.find(aEfpObject);
     if (lIt == gSenderHandles.end()) {
@@ -392,7 +404,7 @@ int16_t efp_send_data(uint64_t aEfpObject,
 int16_t efp_receive_fragment(uint64_t aEfpObject,
                              const uint8_t* apFragment, size_t aSize,
                              uint8_t aFromSource) {
-    std::lock_guard<std::recursive_mutex> lLock(gHandlesMutex);
+    const std::lock_guard<std::recursive_mutex> lLock(gHandlesMutex);
 
     auto lIt = gReceiverHandles.find(aEfpObject);
     if (lIt == gReceiverHandles.end()) {

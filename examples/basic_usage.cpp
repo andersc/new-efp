@@ -11,9 +11,11 @@
 #include <vector>
 #include <thread>
 #include <chrono>
+#include <exception>
 
 int main() {
-    std::cout << "EFP Version: " << efp::VERSION_MAJOR << "." << efp::VERSION_MINOR << "\n\n";
+    try {
+    std::cout << "EFP Version: " << static_cast<unsigned int>(efp::VERSION_MAJOR) << "." << static_cast<unsigned int>(efp::VERSION_MINOR) << "\n\n";
 
     // -------------------------------------------------------------------------
     // Example 1: Simple loopback - send and receive small data
@@ -36,12 +38,12 @@ int main() {
 
         // Connect sender output to receiver input
         lSender.setCallback([&lReceiver](const uint8_t* apData, size_t aSize, uint8_t aStreamId) {
-            lReceiver.receive(apData, aSize, 0);
+            (void)lReceiver.receive(apData, aSize, 0);
         });
 
         // Send some data
-        std::vector<uint8_t> lPayload = {0x01, 0x02, 0x03, 0x04, 0x05};
-        lSender.send(lPayload, 0x01, 1000, 1000, 0, 1);
+        const std::vector<uint8_t> lPayload = {0x01, 0x02, 0x03, 0x04, 0x05};
+        (void)lSender.send(lPayload, 0x01, 1000, 1000, 0, 1);
 
         // Give receiver thread time to process
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -68,12 +70,12 @@ int main() {
 
         lSender.setCallback([&](const uint8_t* apData, size_t aSize, uint8_t) {
             lFragmentCount++;
-            lReceiver.receive(apData, aSize, 0);
+            (void)lReceiver.receive(apData, aSize, 0);
         });
 
         // Send 10KB of data (will be fragmented)
-        std::vector<uint8_t> lLargePayload(10000, 0xAB);
-        lSender.send(lLargePayload, 0x01, 2000, 2000, 0, 1);
+        const std::vector<uint8_t> lLargePayload(10000, 0xAB);
+        (void)lSender.send(lLargePayload, 0x01, 2000, 2000, 0, 1);
 
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
         std::cout << "Data was split into " << lFragmentCount << " fragments\n";
@@ -100,14 +102,14 @@ int main() {
         });
 
         lSender.setCallback([&lReceiver](const uint8_t* apData, size_t aSize, uint8_t) {
-            lReceiver.receive(apData, aSize, 0);
+            (void)lReceiver.receive(apData, aSize, 0);
         });
 
         // Simulated H.264 NAL unit (Annex B format with start code)
         std::vector<uint8_t> lNalUnit = {0x00, 0x00, 0x00, 0x01, 0x67, /* SPS data... */};
         lNalUnit.resize(500);  // Simulate larger NAL
 
-        lSender.send(lNalUnit,
+        (void)lSender.send(lNalUnit,
                     efp::media::PayloadType::H264,
                     90000,  // PTS at 90kHz (1 second)
                     90000,  // DTS
@@ -135,22 +137,22 @@ int main() {
         });
 
         lSender.setCallback([&lReceiver](const uint8_t* apData, size_t aSize, uint8_t) {
-            lReceiver.receive(apData, aSize, 0);
+            (void)lReceiver.receive(apData, aSize, 0);
         });
 
         // Video on stream 1
-        std::vector<uint8_t> lVideo(1000);
-        lSender.send(lVideo, efp::media::PayloadType::H264, 90000, 90000,
+        const std::vector<uint8_t> lVideo(1000);
+        (void)lSender.send(lVideo, efp::media::PayloadType::H264, 90000, 90000,
                     efp::media::PayloadCode::ANXB, 1);
 
         // Audio on stream 2
-        std::vector<uint8_t> lAudio(200);
-        lSender.send(lAudio, efp::media::PayloadType::AAC, 48000, 48000,
+        const std::vector<uint8_t> lAudio(200);
+        (void)lSender.send(lAudio, efp::media::PayloadType::AAC, 48000, 48000,
                     efp::media::PayloadCode::ADTS, 2);
 
         // Metadata on stream 3
-        std::vector<uint8_t> lMetadata(50);
-        lSender.send(lMetadata, efp::media::PayloadType::JSON, 0, 0, 0, 3);
+        const std::vector<uint8_t> lMetadata(50);
+        (void)lSender.send(lMetadata, efp::media::PayloadType::JSON, 0, 0, 0, 3);
 
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
@@ -173,11 +175,11 @@ int main() {
         });
 
         lSender.setCallback([&lReceiver](const uint8_t* apData, size_t aSize, uint8_t) {
-            lReceiver.receive(apData, aSize, 0);
+            (void)lReceiver.receive(apData, aSize, 0);
         });
 
-        std::vector<uint8_t> lPayload(100);
-        lSender.send(lPayload, 0x01, 1000, 1000, 0, 1);
+        const std::vector<uint8_t> lPayload(100);
+        (void)lSender.send(lPayload, 0x01, 1000, 1000, 0, 1);
 
         // In run-to-completion mode, must call poll() to process
         lReceiver.poll();
@@ -199,16 +201,20 @@ int main() {
         });
 
         lSender.setCallback([&lReceiver](const uint8_t* apData, size_t aSize, uint8_t) {
-            lReceiver.receive(apData, aSize, 0);
+            (void)lReceiver.receive(apData, aSize, 0);
         });
 
-        std::vector<uint8_t> lPayload(100);
-        lSender.send(lPayload, 0x01, 1000, 1000, 0, 1);
+        const std::vector<uint8_t> lPayload(100);
+        (void)lSender.send(lPayload, 0x01, 1000, 1000, 0, 1);
 
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
 
     std::cout << "\n=== All examples completed ===\n";
     return 0;
+    } catch (const std::exception& e) {
+        std::cerr << "Exception: " << e.what() << "\n";
+        return 1;
+    }
 }
 

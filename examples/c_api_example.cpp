@@ -35,12 +35,12 @@ typedef struct {
 
 /* Send callback - forwards fragments to receiver */
 static void on_send(const uint8_t* data, size_t size, uint8_t stream_id, void* ctx) {
-    my_context_t* c = (my_context_t*)ctx;
+    auto* c = (const my_context_t*)ctx;
     (void)c;
     (void)stream_id;
 
     if (g_receiver) {
-        int16_t result = efp_receiver_receive(g_receiver, data, size, 0);
+        const int16_t result = efp_receiver_receive(g_receiver, data, size, 0);
         if (result < 0) {
             printf("Error receiving fragment: %d\n", result);
         }
@@ -54,7 +54,7 @@ static void on_receive(uint8_t* data, size_t size,
                        uint32_t payload_code, uint8_t stream_id,
                        uint8_t source_id, uint8_t flags,
                        void* ctx) {
-    my_context_t* c = (my_context_t*)ctx;
+    auto* c = (my_context_t*)ctx;
     c->frames_received++;
 
     if (broken) {
@@ -96,7 +96,7 @@ static void on_receive(uint8_t* data, size_t size,
 /* Embedded data callback */
 static void on_embedded(uint8_t* data, size_t size, uint8_t data_type,
                         uint64_t pts, void* ctx) {
-    my_context_t* c = (my_context_t*)ctx;
+    auto* c = (my_context_t*)ctx;
     c->embedded_received++;
 
     printf("[%s] Received embedded data:\n", c->name);
@@ -144,7 +144,7 @@ int main(void) {
     efp_receiver_set_embedded_callback(g_receiver, on_embedded, &ctx);
 
     /* Prepare test data */
-    uint8_t* test_data = (uint8_t*)malloc(TEST_DATA_SIZE);
+    auto* test_data = (uint8_t*)malloc(TEST_DATA_SIZE);
     for (size_t i = 0; i < TEST_DATA_SIZE; i++) {
         test_data[i] = (uint8_t)i;
     }
@@ -173,17 +173,17 @@ int main(void) {
     printf("\n--- Example 2: Embedded Data ---\n\n");
 
     const char* metadata = "This is embedded metadata!";
-    size_t metadata_len = strlen(metadata) + 1;
+    const size_t metadata_len = strlen(metadata) + 1;
 
     /* Calculate buffer size needed */
-    size_t buffer_size = efp_add_embedded_data(NULL, (uint8_t*)metadata, test_data,
+    const size_t buffer_size = efp_add_embedded_data(NULL, (uint8_t*)metadata, test_data,
                                                 metadata_len, TEST_DATA_SIZE,
                                                 EFP_EMBEDDED_PRIVATE_DATA, 1);
 
     printf("Total buffer size with embedded data: %zu bytes\n", buffer_size);
 
     /* Allocate and build buffer */
-    uint8_t* send_buffer = (uint8_t*)malloc(buffer_size);
+    auto* send_buffer = (uint8_t*)malloc(buffer_size);
     efp_add_embedded_data(send_buffer, (uint8_t*)metadata, test_data,
                           metadata_len, TEST_DATA_SIZE,
                           EFP_EMBEDDED_PRIVATE_DATA, 1);
@@ -213,21 +213,21 @@ int main(void) {
 
     /* Send video on stream 1 */
     printf("Sending video on stream 1...\n");
-    result = efp_sender_send(sender, test_data, 5000,
+    (void)efp_sender_send(sender, test_data, 5000,
                              0x83, 3000, 3000,
                              EFP_CODE('A', 'N', 'X', 'B'),
                              1, EFP_FLAG_NONE);
 
     /* Send audio on stream 2 */
     printf("Sending audio on stream 2...\n");
-    result = efp_sender_send(sender, test_data, 1000,
+    (void)efp_sender_send(sender, test_data, 1000,
                              0x88, 3000, 3000,
                              EFP_CODE('A', 'D', 'T', 'S'),
                              2, EFP_FLAG_NONE);
 
     /* Send metadata on stream 3 */
     printf("Sending metadata on stream 3...\n");
-    result = efp_sender_send(sender, test_data, 100,
+    (void)efp_sender_send(sender, test_data, 100,
                              0x0a, 3000, 3000, 0,
                              3, EFP_FLAG_NONE);
 

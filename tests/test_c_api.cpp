@@ -36,7 +36,7 @@ static int g_test_passed = 1;
 
 /* Send callback - forwards to receiver, optionally dropping packets */
 static void send_callback(const uint8_t* data, size_t size, uint8_t stream_id, void* ctx) {
-    test_context_t* c = (test_context_t*)ctx;
+    auto* c = (const test_context_t*)ctx;
     (void)c;
 
     g_drop_counter++;
@@ -45,7 +45,7 @@ static void send_callback(const uint8_t* data, size_t size, uint8_t stream_id, v
         return;
     }
 
-    int16_t result = efp_receive_fragment(g_receiver_handle, data, size, 0);
+    const int16_t result = efp_receive_fragment(g_receiver_handle, data, size, 0);
     if (result < 0) {
         printf("Error %d in receive_fragment\n", result);
         g_test_passed = 0;
@@ -59,7 +59,7 @@ static void receive_callback(uint8_t* data, size_t size,
                              uint32_t payload_code, uint8_t stream_id,
                              uint8_t source_id, uint8_t flags,
                              void* ctx) {
-    test_context_t* c = (test_context_t*)ctx;
+    auto* c = (test_context_t*)ctx;
 
     c->frames_received++;
     c->last_frame_size = size;
@@ -84,7 +84,7 @@ static void receive_callback(uint8_t* data, size_t size,
 /* Embedded data callback */
 static void embedded_callback(uint8_t* data, size_t size, uint8_t data_type,
                               uint64_t pts, void* ctx) {
-    test_context_t* c = (test_context_t*)ctx;
+    auto* c = (test_context_t*)ctx;
 
     c->embedded_received++;
     printf("Received embedded data: size=%zu, type=%d, pts=%llu\n",
@@ -139,7 +139,7 @@ static int test_legacy_api(void) {
     g_test_passed = 1;
 
     /* Create sender */
-    uint64_t sender_handle = efp_init_send(300, send_callback, &g_ctx);
+    const uint64_t sender_handle = efp_init_send(300, send_callback, &g_ctx);
     if (!sender_handle) {
         printf("FAIL: Could not create sender\n");
         return 0;
@@ -156,21 +156,21 @@ static int test_legacy_api(void) {
 
     /* Prepare test data */
     const size_t TEST_DATA_SIZE = 10000;
-    uint8_t* test_data = (uint8_t*)malloc(TEST_DATA_SIZE);
+    auto* test_data = (uint8_t*)malloc(TEST_DATA_SIZE);
     for (size_t i = 0; i < TEST_DATA_SIZE; i++) {
         test_data[i] = (uint8_t)i;
     }
 
     /* Prepare embedded data */
     const char* embedded_str = "Hello from embedded data!";
-    size_t embedded_len = strlen(embedded_str) + 1;
+    const size_t embedded_len = strlen(embedded_str) + 1;
 
     /* Calculate total size needed */
-    size_t alloc_size = efp_add_embedded_data(NULL, (uint8_t*)embedded_str, test_data,
+    const size_t alloc_size = efp_add_embedded_data(NULL, (uint8_t*)embedded_str, test_data,
                                                embedded_len, TEST_DATA_SIZE,
                                                EFP_EMBEDDED_PRIVATE_DATA, 1);
 
-    uint8_t* send_buffer = (uint8_t*)malloc(alloc_size);
+    auto* send_buffer = (uint8_t*)malloc(alloc_size);
     efp_add_embedded_data(send_buffer, (uint8_t*)embedded_str, test_data,
                           embedded_len, TEST_DATA_SIZE,
                           EFP_EMBEDDED_PRIVATE_DATA, 1);
@@ -256,7 +256,7 @@ static int test_new_api(void) {
     /* Note: Without proper loopback setup, we can't fully test here */
     /* This is mainly testing that the API doesn't crash */
 
-    int16_t result = efp_sender_send(sender, data, sizeof(data),
+    const int16_t result = efp_sender_send(sender, data, sizeof(data),
                                      0x01, 1000, 1000, 0, 1, EFP_FLAG_NONE);
 
     efp_receiver_poll(receiver);
@@ -278,13 +278,13 @@ static int test_embedded_helpers(void) {
     printf("\n=== Test: Embedded Data Helpers ===\n");
 
     const char* embedded = "Test embedded data";
-    size_t emb_size = strlen(embedded) + 1;
+    const size_t emb_size = strlen(embedded) + 1;
 
     uint8_t payload[100];
     memset(payload, 0x55, sizeof(payload));
 
     /* Calculate size */
-    size_t total = efp_embedded_calc_size(emb_size, sizeof(payload));
+    const size_t total = efp_embedded_calc_size(emb_size, sizeof(payload));
     printf("Calculated size: %zu\n", total);
 
     if (total != 3 + emb_size + sizeof(payload)) {
@@ -293,8 +293,8 @@ static int test_embedded_helpers(void) {
     }
 
     /* Build combined buffer */
-    uint8_t* buffer = (uint8_t*)malloc(total);
-    size_t result = efp_add_embedded_data(buffer, (uint8_t*)embedded, payload,
+    auto* buffer = (uint8_t*)malloc(total);
+    const size_t result = efp_add_embedded_data(buffer, (uint8_t*)embedded, payload,
                                           emb_size, sizeof(payload),
                                           EFP_EMBEDDED_PRIVATE_DATA, 1);
 
@@ -310,7 +310,7 @@ static int test_embedded_helpers(void) {
     uint8_t extracted_type;
     size_t payload_offset;
 
-    int16_t extract_result = efp_extract_embedded_data(buffer, total,
+    const int16_t extract_result = efp_extract_embedded_data(buffer, total,
                                                         extracted, &extracted_size,
                                                         &extracted_type, &payload_offset);
 
@@ -341,9 +341,9 @@ static int test_embedded_helpers(void) {
 static int test_version(void) {
     printf("\n=== Test: Version ===\n");
 
-    uint16_t version = efp_version();
-    uint8_t major = version >> 8;
-    uint8_t minor = version & 0xFF;
+    const uint16_t version = efp_version();
+    const uint8_t major = version >> 8;
+    const uint8_t minor = version & 0xFF;
 
     printf("EFP Version: %d.%d\n", major, minor);
 
@@ -397,12 +397,30 @@ int main(void) {
     int passed = 0;
     int total = 0;
 
-    total++; if (test_version()) passed++;
-    total++; if (test_basic_roundtrip()) passed++;
-    total++; if (test_embedded_helpers()) passed++;
-    total++; if (test_error_handling()) passed++;
-    total++; if (test_new_api()) passed++;
-    total++; if (test_legacy_api()) passed++;
+    total++;
+    if (test_version()) {
+        passed++;
+    }
+    total++;
+    if (test_basic_roundtrip()) {
+        passed++;
+    }
+    total++;
+    if (test_embedded_helpers()) {
+        passed++;
+    }
+    total++;
+    if (test_error_handling()) {
+        passed++;
+    }
+    total++;
+    if (test_new_api()) {
+        passed++;
+    }
+    total++;
+    if (test_legacy_api()) {
+        passed++;
+    }
 
     printf("\n====================\n");
     printf("Results: %d/%d tests passed\n", passed, total);
