@@ -1,0 +1,88 @@
+C++ Coding Style Guide
+
+1. Namespaces
+
+-   Do not use using namespace ...; anywhere.
+-   Do not use using std::string; or similar. Always use fully qualified
+    names (e.g. std::string).
+
+2. Underscore Usage
+
+-   Never use _ as a prefix or postfix.
+-   _ may only appear between letters (e.g. MAX_COUNT).
+
+3. Naming Conventions
+
+-   Default naming style is camelCase.
+-   Types (classes, structs, enums) start with a capital letter.
+-   Functions start with a lowercase letter and use camelCase.
+
+4. Variables & Parameters
+
+4.1 Local Variables
+
+-   Must use camelCase.
+-   Must be prefixed with l.
+
+4.2 Function Parameters
+
+-   Value or const-value: prefix with a
+-   References: prefix with r
+-   Pointers: prefix with p
+
+4.3 Class Members
+
+-   Members use camelCase.
+-   Normal members use prefix m.
+-   Pointer members use prefix mp.
+
+4.4 Global Variables
+
+-   Avoid globals whenever possible.
+-   If absolutely necessary, prefix with g.
+
+5. Constants
+
+-   Use UPPER_SNAKE_CASE.
+-   Applies to const, constexpr, and enum values.
+
+6. Types
+
+-   Classes, structs, enums, and aliases must start with a capital
+    letter.
+-   Do not use typedef or using alias unless a well‑justified technical
+    reason exists.
+-   use std::string instead of char*.
+-   use uint8_t instead of unsigned char.
+-   use int8_t instead of signed char.
+-   use uint16_t instead of unsigned short.
+-   use int16_t instead of signed short.
+-   use uint32_t instead of unsigned int.
+-   use int32_t instead of signed int.
+-   use uint64_t instead of unsigned long long.
+-   use int64_t instead of signed long long.
+-   use auto instead of explicit type declarations.
+
+7. Functions
+
+-   Functions must begin with a lowercase letter.
+-   Use camelCase.
+
+8. Casting
+
+-   Only C-style casts are allowed.
+
+9. Static, Anonymous Namespaces, and Linkage
+
+-   Do not use static outside a namespace.
+-   Do not use anonymous namespaces.
+-   Avoid global functions unless necessary.
+
+10. Includes
+
+-   Never place using namespace or using std::... inside headers.
+-   Recommended include ordering:
+    1.  Matching header
+    2.  Standard library headers
+    3.  External library headers
+    4.  Local/project headers
