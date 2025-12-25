@@ -76,17 +76,17 @@ struct __attribute__((packed)) FrameType3 {
 static_assert(sizeof(FrameType3) == 8, "FrameType3 must be 8 bytes");
 
 // Helper to extract frame type from first byte
-inline FrameType getFrameType(uint8_t aFirstByte) {
+[[nodiscard]] constexpr FrameType getFrameType(uint8_t aFirstByte) noexcept {
     return (FrameType)(aFirstByte & 0x0F);
 }
 
 // Helper to extract flags from first byte
-inline uint8_t getFlags(uint8_t aFirstByte) {
+[[nodiscard]] constexpr uint8_t getFlags(uint8_t aFirstByte) noexcept {
     return aFirstByte & 0xF0;
 }
 
 // Helper to combine frame type and flags
-inline uint8_t makeFrameTypeByte(FrameType aType, uint8_t aFlags) {
+[[nodiscard]] constexpr uint8_t makeFrameTypeByte(FrameType aType, uint8_t aFlags) noexcept {
     return (uint8_t)(aType) | (aFlags & 0xF0);
 }
 

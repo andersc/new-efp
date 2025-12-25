@@ -1,6 +1,6 @@
 # Elastic Frame Protocol (EFP)
 
-A lightweight, header-only C++17 library for fragmenting and reassembling data over unreliable or size-limited transport layers.
+A lightweight, header-only C++20 library for fragmenting and reassembling data over unreliable or size-limited transport layers.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -27,6 +27,18 @@ A lightweight, header-only C++17 library for fragmenting and reassembling data o
 - **Stream multiplexing** — Up to 256 independent streams
 - **Configurable** — Template-based buffer sizing with compile-time validation
 - **Thread-safe** — Built-in threading or run-to-completion mode
+
+## C++20 Features
+
+This library leverages modern C++20 features for improved performance and safety:
+
+- **Concepts** — `ValidBufferSize` concept for compile-time buffer size validation
+- **`std::span`** — Zero-copy buffer views for efficient data passing
+- **`std::jthread`** — Self-joining threads with cooperative cancellation via `std::stop_token`
+- **`[[likely]]`/`[[unlikely]]`** — Branch prediction hints for optimized hot paths
+- **`[[nodiscard]]`** — Prevents ignoring important return values
+- **`consteval`** — Compile-time only evaluation for version queries
+- **`<bit>` header** — `std::has_single_bit` for power-of-2 validation
 
 ## Quick Start
 
@@ -242,6 +254,8 @@ This project follows a specific naming convention (see `codestyle.txt`):
 - **Functions**: camelCase (e.g., `setCallback`, `receive`)
 - **Casts**: C-style casts only (e.g., `(uint8_t)(value)`)
 - **No `_` prefix/postfix** on identifiers
+
+For static analysis with clang-tidy, see `use_clang_tidy.txt` for recommended configurations and project-specific suppressions.
 
 ## Use Cases
 
