@@ -222,7 +222,7 @@ static int test_legacy_api(void) {
     }
 }
 
-/* Test 3: New API */
+/* Test 3: New API with proper loopback and data verification */
 static int test_new_api(void) {
     printf("\n=== Test: New Opaque Handle API ===\n");
 
@@ -236,39 +236,70 @@ static int test_new_api(void) {
 
     test_context_t ctx = {0};
 
-    /* Set up loopback */
+    /* Set up loopback structure */
     struct {
         efp_receiver_t recv;
-    } loopback_ctx = {receiver};
+        int fragments_received;
+    } loopback_ctx = {receiver, 0};
 
     efp_sender_set_callback(sender,
         [](const uint8_t* data, size_t size, uint8_t stream_id, void* c) {
-            /* We can't easily do loopback here due to C limitations */
-            (void)data; (void)size; (void)stream_id; (void)c;
+            auto* lctx = (decltype(&loopback_ctx))c;
+            int16_t res = efp_receiver_receive(lctx->recv, data, size, 0);
+            if (res >= 0) {
+                lctx->fragments_received++;
+            }
+            (void)stream_id;
         }, &loopback_ctx);
 
-    efp_receiver_set_callback(receiver, receive_callback, &ctx);
+    efp_receiver_set_callback(receiver,
+        [](uint8_t* data, size_t size, uint8_t payload_type, uint8_t broken,
+           uint64_t pts, uint64_t dts, uint32_t payload_code, uint8_t stream_id,
+           uint8_t source_id, uint8_t flags, void* c) {
+            auto* tctx = (test_context_t*)c;
+            tctx->frames_received++;
+            tctx->last_frame_size = size;
+            tctx->last_pts = pts;
 
-    /* Send some data */
+            /* Verify data content - should all be 0xAB */
+            int content_valid = 1;
+            for (size_t i = 0; i < size; i++) {
+                if (data[i] != 0xAB) {
+                    content_valid = 0;
+                    break;
+                }
+            }
+            tctx->value = content_valid;
+
+            (void)payload_type; (void)broken; (void)dts;
+            (void)payload_code; (void)stream_id; (void)source_id; (void)flags;
+        }, &ctx);
+
+    /* Send some data with distinctive pattern */
     uint8_t data[100];
     memset(data, 0xAB, sizeof(data));
-
-    /* Note: Without proper loopback setup, we can't fully test here */
-    /* This is mainly testing that the API doesn't crash */
 
     const int16_t result = efp_sender_send(sender, data, sizeof(data),
                                      0x01, 1000, 1000, 0, 1, EFP_FLAG_NONE);
 
     efp_receiver_poll(receiver);
 
+    int success = (result == EFP_OK &&
+                   ctx.frames_received == 1 &&
+                   ctx.last_frame_size == 100 &&
+                   ctx.last_pts == 1000 &&
+                   ctx.value == 1);  /* Content was verified */
+
     efp_sender_destroy(sender);
     efp_receiver_destroy(receiver);
 
-    if (result == EFP_OK) {
-        printf("PASS: New API test\n");
+    if (success) {
+        printf("PASS: New API test (received %d frame, size=%zu, content verified)\n",
+               ctx.frames_received, ctx.last_frame_size);
         return 1;
     } else {
-        printf("FAIL: Send returned %d\n", result);
+        printf("FAIL: result=%d, frames=%d, size=%zu, content_ok=%d\n",
+               result, ctx.frames_received, ctx.last_frame_size, ctx.value);
         return 0;
     }
 }

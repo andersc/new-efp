@@ -284,6 +284,11 @@ MIT License - See [LICENSE](LICENSE) for details.
 
 ### Recent Changes
 
+- **Improved**: Test data integrity verification - tests now fill payloads with distinctive patterns and verify content arrives correctly:
+  - `test_lifecycle.cpp`: "Stop and restart sender" now verifies sequential byte content
+  - `test_integration.cpp`: "Send and receive multiple frames sequentially" now verifies payload size and content per frame
+  - `test_edge_cases.cpp`: "All 256 stream IDs work" now fills each stream's payload with its stream ID and verifies on receive
+  - `test_c_api.cpp`: "New API test" now has proper loopback and content verification
 - **Fixed**: Critical bug in `recalculateSuperFrameNo()` where signed int16 subtraction could overflow at frame 32768, causing frames 32768-65535+ to be rejected as "too old" when using buffer sizes ≥32768
 - **Fixed**: Test name "Send 100000 superframes" now correctly reflects it sends 50000 superframes
 - **Fixed**: Test "Send 1000000 small frames (endurance)" now actually sends 1 million frames as intended

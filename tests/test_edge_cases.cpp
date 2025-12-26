@@ -12,6 +12,8 @@
 #include <chrono>
 #include <thread>
 #include <set>
+#include <map>
+#include <mutex>
 
 constexpr uint16_t MTU = 1456;
 
@@ -190,31 +192,50 @@ TEST_SUITE("Edge Cases") {
     }
 
     TEST_CASE("All 256 stream IDs work") {
-        efp::Sender sender(MTU);
-        efp::Receiver receiver(100, 0);
+        efp::Sender lSender(MTU);
+        efp::Receiver lReceiver(100, 0);
 
-        std::atomic<int> receivedCount{0};
+        std::atomic<int> lReceivedCount{0};
+        std::map<uint8_t, bool> lStreamContentVerified;
+        std::mutex lMutex;
 
-        receiver.setCallback([&](efp::SuperFramePtr frame) {
-            receivedCount++;
+        lReceiver.setCallback([&](efp::SuperFramePtr apFrame) {
+            std::lock_guard<std::mutex> lLock(lMutex);
+
+            // Verify payload is filled with the stream ID value
+            bool lContentValid = true;
+            for (size_t lI = 0; lI < apFrame->mSize; lI++) {
+                if (apFrame->mpData[lI] != apFrame->mStreamId) {
+                    lContentValid = false;
+                    break;
+                }
+            }
+            lStreamContentVerified[apFrame->mStreamId] = lContentValid;
+            CHECK(lContentValid);
+
+            lReceivedCount++;
         });
 
-        sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-            (void)receiver.receive(data, size, 0);
+        lSender.setCallback([&](const uint8_t* apData, size_t aSize, uint8_t) {
+            (void)lReceiver.receive(apData, aSize, 0);
         });
-
-        std::vector<uint8_t> payload(50);
 
         // Test a sample of stream IDs (skip 0 for now)
-        std::vector<uint8_t> testStreams = {1, 127, 128, 254, 255};
-        for (uint8_t streamId : testStreams) {
-            (void)sender.send(payload, 0x01, 1000, 1000, 0, streamId);
+        std::vector<uint8_t> lTestStreams = {1, 127, 128, 254, 255};
+        for (uint8_t lStreamId : lTestStreams) {
+            // Fill payload with stream ID for identification
+            std::vector<uint8_t> lPayload(50, lStreamId);
+            (void)lSender.send(lPayload, 0x01, 1000, 1000, 0, lStreamId);
         }
 
-        REQUIRE(waitFor([&]{ return receivedCount.load() == static_cast<int>(testStreams.size()); }));
+        REQUIRE(waitFor([&]{ return lReceivedCount.load() == static_cast<int>(lTestStreams.size()); }));
 
-        // Verify each stream ID was received
-        CHECK(receivedCount.load() == 5);
+        // Verify each stream ID was received with correct content
+        std::lock_guard<std::mutex> lLock(lMutex);
+        CHECK(lReceivedCount.load() == 5);
+        for (uint8_t lStreamId : lTestStreams) {
+            CHECK(lStreamContentVerified[lStreamId]);
+        }
     }
 
     TEST_CASE("Payload code UINT32_MAX is preserved") {

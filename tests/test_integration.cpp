@@ -58,12 +58,20 @@ TEST_SUITE("Integration") {
 
         REQUIRE(waitFor([&]{ return receivedCount.load() == numFrames; }));
 
-        std::lock_guard<std::mutex> lock(framesMutex);
+        std::lock_guard<std::mutex> lLock(framesMutex);
         CHECK(receivedFrames.size() == numFrames);
 
-        for (int i = 0; i < numFrames; i++) {
-            CHECK(receivedFrames[i]->mPts == static_cast<uint64_t>(1000 + i));
-            CHECK(!receivedFrames[i]->mBroken);
+        for (int lI = 0; lI < numFrames; lI++) {
+            CHECK(receivedFrames[lI]->mPts == static_cast<uint64_t>(1000 + lI));
+            CHECK(!receivedFrames[lI]->mBroken);
+
+            // Verify payload size matches what was sent (100 + i * 50)
+            CHECK(receivedFrames[lI]->mSize == static_cast<size_t>(100 + lI * 50));
+
+            // Verify all bytes have the correct value (filled with frame index)
+            for (size_t lJ = 0; lJ < receivedFrames[lI]->mSize; lJ++) {
+                CHECK(receivedFrames[lI]->mpData[lJ] == static_cast<uint8_t>(lI));
+            }
         }
     }
 

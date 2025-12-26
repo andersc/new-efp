@@ -55,14 +55,21 @@ TEST_SUITE("Lifecycle") {
                 CHECK(!frame->mBroken);
                 CHECK(frame->mPts == 1000 + receivedFrameNumber);
                 CHECK(frame->mStreamId == 1);
+
+                // Verify data integrity - sequential bytes
+                uint8_t lVectorChecker = 0;
+                for (size_t lX = 0; lX < frame->mSize; lX++) {
+                    CHECK(frame->mpData[lX] == lVectorChecker++);
+                }
+
                 dataReceived++;
             });
 
             for (uint64_t packetNumber = 0; packetNumber < 100; packetNumber++) {
                 size_t randSize = (rand() % 10000) + 1;
                 std::vector<uint8_t> mydata(randSize);
-                std::generate(mydata.begin(), mydata.end(), [n = 0]() mutable {
-                    return static_cast<uint8_t>(n++);
+                std::generate(mydata.begin(), mydata.end(), [lN = 0]() mutable {
+                    return static_cast<uint8_t>(lN++);
                 });
 
                 auto result = sender.send(mydata, 0x83, packetNumber + 1001, packetNumber,
@@ -90,14 +97,21 @@ TEST_SUITE("Lifecycle") {
                 CHECK(!frame->mBroken);
                 CHECK(frame->mPts == 1000 - 100 + receivedFrameNumber);
                 CHECK(frame->mStreamId == 2);
+
+                // Verify data integrity - sequential bytes
+                uint8_t lVectorChecker = 0;
+                for (size_t lX = 0; lX < frame->mSize; lX++) {
+                    CHECK(frame->mpData[lX] == lVectorChecker++);
+                }
+
                 dataReceived++;
             });
 
             for (uint64_t packetNumber = 0; packetNumber < 100; packetNumber++) {
                 size_t randSize = (rand() % 10000) + 1;
                 std::vector<uint8_t> mydata(randSize);
-                std::generate(mydata.begin(), mydata.end(), [n = 0]() mutable {
-                    return static_cast<uint8_t>(n++);
+                std::generate(mydata.begin(), mydata.end(), [lN = 0]() mutable {
+                    return static_cast<uint8_t>(lN++);
                 });
 
                 auto result = sender.send(mydata, 0x83, packetNumber + 1001, packetNumber,
