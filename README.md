@@ -280,6 +280,15 @@ The project passes clang-tidy with the recommended "Quick Code Quality Check" co
 
 MIT License - See [LICENSE](LICENSE) for details.
 
+## Changelog
+
+### Recent Changes
+
+- **Fixed**: Critical bug in `recalculateSuperFrameNo()` where signed int16 subtraction could overflow at frame 32768, causing frames 32768-65535+ to be rejected as "too old" when using buffer sizes ≥32768
+- **Fixed**: Test name "Send 100000 superframes" now correctly reflects it sends 50000 superframes
+- **Fixed**: Test "Send 1000000 small frames (endurance)" now actually sends 1 million frames as intended
+- **Added**: `pendingCount()` method to Receiver for debugging/diagnostics
+
 ## Credits
 
 Anders Cedronius

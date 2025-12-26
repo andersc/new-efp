@@ -36,7 +36,7 @@ TEST_SUITE("Stress Tests") {
     // =========================================================================
     // UnitTest13: Send 50,000 superframes of fixed size (within buffer limits)
     // =========================================================================
-    TEST_CASE("Send 100000 superframes (UnitTest13)" * doctest::timeout(120)) {
+    TEST_CASE("Send 50000 superframes (UnitTest13)" * doctest::timeout(120)) {
         const size_t FRAME_SIZE = ((MTU - sizeof(efp::FrameType1)) * 5) + 12;
         const size_t FRAME_COUNT = 50000;  // Keep within buffer size
 
@@ -82,10 +82,11 @@ TEST_SUITE("Stress Tests") {
     }
 
     // =========================================================================
-    // Send 50,000 small frames (endurance test) - reduced to fit buffer
+    // Send 1,000,000 small frames (endurance test)
+    // Uses RUN_TO_COMPLETION mode for immediate delivery without buffering
     // =========================================================================
     TEST_CASE("Send 1000000 small frames (endurance)" * doctest::timeout(300)) {
-        const size_t FRAME_COUNT = 50000;  // Keep within buffer size
+        const size_t FRAME_COUNT = 1000000;  // Actual 1 million frames
 
         efp::Sender lSender(MTU);
         // Use RunToCompletion mode so frames are delivered immediately during receive()

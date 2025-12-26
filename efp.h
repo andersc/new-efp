@@ -455,6 +455,11 @@ public:
         processTimeouts();
     }
 
+    // Get number of pending (incomplete) frames in the bucket map
+    [[nodiscard]] size_t pendingCount() const {
+        return mBucketMap.size();
+    }
+
     // Stop receiver threads (jthreads auto-join on destruction but this allows early stop)
     void stop() {
         auto lExpected = true;
@@ -515,7 +520,9 @@ private:
             mFirstFrame = false;
             return mFrameNoRecalc;
         }
-        auto lDelta = (int16_t)(aFrameNo) - (int16_t)(mOldFrameNo);
+        // Calculate delta using unsigned subtraction then interpret as signed
+        // This correctly handles the 16-bit wrap-around without overflow
+        auto lDelta = (int16_t)(uint16_t)(aFrameNo - mOldFrameNo);
         mOldFrameNo = aFrameNo;
         mFrameNoRecalc += lDelta;
         return mFrameNoRecalc;
