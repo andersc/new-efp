@@ -32,13 +32,15 @@ A lightweight, header-only C++20 library for fragmenting and reassembling data o
 
 This library leverages modern C++20 features for improved performance and safety:
 
-- **Concepts** — `ValidBufferSize` concept for compile-time buffer size validation
-- **`std::span`** — Zero-copy buffer views for efficient data passing
+- **Concepts** — `ValidBufferSize`, `SendCallbackConcept`, `ReceiveCallbackConcept` for compile-time validation
+- **`std::span`** — Zero-copy buffer views for efficient data passing (used in send callback)
 - **`std::jthread`** — Self-joining threads with cooperative cancellation via `std::stop_token`
 - **`[[likely]]`/`[[unlikely]]`** — Branch prediction hints for optimized hot paths
 - **`[[nodiscard]]`** — Prevents ignoring important return values
+- **`[[no_unique_address]]`** — Empty callback types don't take space in the class
 - **`consteval`** — Compile-time only evaluation for version queries
 - **`<bit>` header** — `std::has_single_bit` for power-of-2 validation
+- **Template-based callbacks** — Callbacks are template parameters for zero-overhead inlining (no `std::function`)
 
 ## Quick Start
 
@@ -46,19 +48,16 @@ This library leverages modern C++20 features for improved performance and safety
 #include "efp.h"
 
 int main() {
-    efp::Sender lSender(1400);  // MTU size
-    efp::Receiver lReceiver(100);  // 100ms timeout
-
-    // Receive callback
-    lReceiver.setCallback([](efp::SuperFramePtr apFrame) {
+    // Create receiver with callback (callback is required at construction time)
+    auto lReceiver = efp::makeReceiver([](efp::SuperFramePtr apFrame) {
         // Process received data
         process(apFrame->mpData, apFrame->mSize);
-    });
+    }, 100);  // 100ms timeout
 
-    // Connect sender to receiver (via your transport)
-    lSender.setCallback([&](const uint8_t* apData, size_t aSize, uint8_t aStreamId) {
+    // Create sender with callback (callback is required at construction time)
+    auto lSender = efp::makeSender(1400, [&](std::span<const uint8_t> aData, uint8_t aStreamId) {
         // Send over network, then on receive:
-        lReceiver.receive(apData, aSize);
+        lReceiver.receive(aData);
     });
 
     // Send data
@@ -95,35 +94,44 @@ Copy `efp.h`, `efp_internal.h`, and optionally `efp_media_types.h` to your proje
 ### Sender
 
 ```cpp
-template<uint16_t BUFFER_SIZE = 8191>
+// Template-based Sender with compile-time callback type deduction
+template<typename SendCallbackT, uint16_t BUFFER_SIZE = 8191>
 class Sender {
-    explicit Sender(uint16_t aMtu);
+    explicit Sender(uint16_t aMtu, SendCallbackT aCallback);
 
-    void setCallback(SendCallback aCallback);
-
-    Result send(const uint8_t* apData, size_t aSize,
+    Result send(std::span<const uint8_t> aData,
                 uint8_t aPayloadType, uint64_t aPts, uint64_t aDts,
                 uint32_t aPayloadCode, uint8_t aStreamId,
                 uint8_t aFlags = Flags::NONE);
 };
+
+// Factory function (recommended)
+auto lSender = efp::makeSender(mtu, [](std::span<const uint8_t> data, uint8_t stream) {
+    // Send callback
+});
 ```
 
 ### Receiver
 
 ```cpp
-template<uint16_t BUFFER_SIZE = 8191>
+// Template-based Receiver with compile-time callback type deduction
+template<typename ReceiveCallbackT, uint16_t BUFFER_SIZE = 8191>
 class Receiver {
-    explicit Receiver(uint32_t aTimeoutMs = 100,
+    explicit Receiver(ReceiveCallbackT aCallback,
+                      uint32_t aTimeoutMs = 100,
                       uint32_t aHolTimeoutMs = 0,
                       ReceiverMode aMode = ReceiverMode::THREADED);
 
-    void setCallback(ReceiveCallback aCallback);
-
-    Result receive(const uint8_t* apData, size_t aSize, uint8_t aSourceId = 0);
+    Result receive(std::span<const uint8_t> aData, uint8_t aSourceId = 0);
 
     void poll();  // For RUN_TO_COMPLETION mode
     void stop();
 };
+
+// Factory function (recommended)
+auto lReceiver = efp::makeReceiver([](efp::SuperFramePtr frame) {
+    // Receive callback
+}, 100);  // timeout in ms
 ```
 
 ### SuperFrame (received data)
@@ -177,29 +185,35 @@ Type2 (27 bytes):
 
 ### Buffer Size
 
-The circular buffer size must be `2^n - 1` for efficient bitmask operations:
+The circular buffer size must be `2^n - 1` for efficient bitmask operations.
+The default buffer size (8191) is suitable for most use cases.
+
+For custom buffer sizes, use the class directly with explicit template parameters:
 
 ```cpp
-efp::Sender<1023> lSender(1400);   // 2^10 - 1
-efp::Sender<4095> lSender(1400);   // 2^12 - 1
-efp::Sender<8191> lSender(1400);   // 2^13 - 1 (default)
-efp::Sender<16383> lSender(1400);  // 2^14 - 1
+// Define a callable type for custom buffer sizes
+struct MySendCallback {
+    void operator()(std::span<const uint8_t> data, uint8_t stream) { /* ... */ }
+};
+
+efp::Sender<MySendCallback, 1023> lSender(1400, MySendCallback{});   // 2^10 - 1
+efp::Sender<MySendCallback, 16383> lSender(1400, MySendCallback{});  // 2^14 - 1
 ```
 
 Invalid sizes cause compile-time errors:
 
 ```cpp
-efp::Sender<1000> lSender(1400);  // ERROR: not 2^n - 1
+efp::Sender<MySendCallback, 1000> lSender(1400, cb);  // ERROR: not 2^n - 1
 ```
 
 ### Receiver Modes
 
 ```cpp
 // Threaded mode (default): Background threads handle assembly
-efp::Receiver lReceiver(100, 0, efp::ReceiverMode::THREADED);
+auto lReceiver = efp::makeReceiver(callback, 100, 0, efp::ReceiverMode::THREADED);
 
 // Run-to-completion: No threads, caller drives processing
-efp::Receiver lReceiver(100, 0, efp::ReceiverMode::RUN_TO_COMPLETION);
+auto lReceiver = efp::makeReceiver(callback, 100, 0, efp::ReceiverMode::RUN_TO_COMPLETION);
 lReceiver.poll();  // Must call periodically
 ```
 
@@ -282,7 +296,30 @@ MIT License - See [LICENSE](LICENSE) for details.
 
 ## Changelog
 
-### Recent Changes
+### v1.1.0 - Template-Based Callbacks
+
+**Breaking Changes:**
+- **Callbacks are now required at construction time** — Removed `setCallback()` method; callbacks must be passed to constructor
+- **Template-based callback types** — Sender and Receiver are now templated on the callback type for zero-overhead function calls
+- **`std::span` for send callbacks** — Send callback signature changed from `(const uint8_t*, size_t, uint8_t)` to `(std::span<const uint8_t>, uint8_t)`
+
+**New Features:**
+- **`makeSender()` factory function** — Creates Sender with automatic callback type deduction
+- **`makeReceiver()` factory function** — Creates Receiver with automatic callback type deduction
+- **`[[no_unique_address]]`** — Empty callback types don't take space
+- **Zero-overhead callbacks** — Template-based callbacks are inlined by compiler (no std::function overhead)
+
+**Migration Guide:**
+```cpp
+// Old API (removed):
+efp::Sender lSender(1400);
+lSender.setCallback([](const uint8_t* data, size_t size, uint8_t stream) { ... });
+
+// New API:
+auto lSender = efp::makeSender(1400, [](std::span<const uint8_t> data, uint8_t stream) { ... });
+```
+
+### Previous Changes
 
 - **Improved**: Test data integrity verification - tests now fill payloads with distinctive patterns and verify content arrives correctly:
   - `test_lifecycle.cpp`: "Stop and restart sender" now verifies sequential byte content

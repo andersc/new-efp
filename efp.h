@@ -1,9 +1,11 @@
 //
 // Elastic Frame Protocol - Main Header
-// Copyright 2024-2025
+// Copyright 2024-2026
 //
 // A lightweight, generic data framing protocol for fragmenting and
 // reassembling data over unreliable or size-limited transport layers.
+//
+// Zero-overhead template callbacks for maximum performance.
 //
 
 #ifndef EFP_H
@@ -13,7 +15,6 @@
 #include <cstddef>
 #include <cstring>
 #include <memory>
-#include <functional>
 #include <vector>
 #include <map>
 #include <bitset>
@@ -27,6 +28,7 @@
 #include <bit>
 #include <concepts>
 #include <stop_token>
+#include <type_traits>
 
 #include "efp_internal.h"
 
@@ -34,7 +36,7 @@ namespace efp {
 
 // Version info
 constexpr uint8_t  VERSION_MAJOR = 1;
-constexpr uint8_t  VERSION_MINOR = 0;
+constexpr uint8_t  VERSION_MINOR = 1;
 constexpr uint16_t VERSION = ((uint16_t)(VERSION_MAJOR) << 8) | VERSION_MINOR;
 
 // Default circular buffer size (must be 2^n - 1 for bitmask operations)
@@ -43,6 +45,17 @@ constexpr uint16_t DEFAULT_BUFFER_SIZE = 8191;
 // C++20 concept for valid buffer sizes (must be 2^n - 1)
 template<uint16_t N>
 concept ValidBufferSize = std::has_single_bit(static_cast<unsigned>(N + 1));
+
+// Forward declarations
+class SuperFrame;
+using SuperFramePtr = std::unique_ptr<SuperFrame>;
+
+// C++20 concepts for callback validation
+template<typename T>
+concept SendCallbackConcept = std::invocable<T, std::span<const uint8_t>, uint8_t>;
+
+template<typename T>
+concept ReceiveCallbackConcept = std::invocable<T, SuperFramePtr>;
 
 // Result codes
 enum class Result : int16_t {
@@ -120,29 +133,18 @@ public:
     }
 };
 
-using SuperFramePtr = std::unique_ptr<SuperFrame>;
-
-//------------------------------------------------------------------------------
-// SendCallback: Called for each fragment to be transmitted
-//------------------------------------------------------------------------------
-using SendCallback = std::function<void(const uint8_t* apData, size_t aSize, uint8_t aStreamId)>;
-
-// C++20 span-based callback for zero-copy buffer passing
-using SendCallbackSpan = std::function<void(std::span<const uint8_t> aData, uint8_t aStreamId)>;
-
-//------------------------------------------------------------------------------
-// ReceiveCallback: Called when a SuperFrame is assembled (or times out)
-//------------------------------------------------------------------------------
-using ReceiveCallback = std::function<void(SuperFramePtr apFrame)>;
+// SuperFramePtr already forward-declared above
 
 //------------------------------------------------------------------------------
 // Sender: Fragments data into EFP packets
+// Template callback for zero-overhead invocation (no std::function)
 //------------------------------------------------------------------------------
-template<uint16_t BUFFER_SIZE = DEFAULT_BUFFER_SIZE>
-    requires ValidBufferSize<BUFFER_SIZE>
+template<typename SendCallbackT, uint16_t BUFFER_SIZE = DEFAULT_BUFFER_SIZE>
+    requires ValidBufferSize<BUFFER_SIZE> && SendCallbackConcept<SendCallbackT>
 class Sender {
 public:
-    explicit Sender(uint16_t aMtu) : mMtu(aMtu) {
+    explicit Sender(uint16_t aMtu, SendCallbackT aCallback)
+        : mMtu(aMtu), mCallback(std::move(aCallback)) {
         if (mMtu < 256) mMtu = 256;
         mSendBuffer.resize(mMtu);
     }
@@ -158,30 +160,12 @@ public:
     // Get version
     [[nodiscard]] static consteval uint16_t version() noexcept { return VERSION; }
 
-    // Set send callback
-    void setCallback(SendCallback aCallback) {
-        mCallback = std::move(aCallback);
-    }
-
-    // C++20: span-based callback for zero-copy buffer passing
-    void setCallback(SendCallbackSpan aCallback) {
-        mCallbackSpan = std::move(aCallback);
-    }
-
-    // Pack and send data using span (C++20 preferred API)
+    // Pack and send data using span (primary API)
     [[nodiscard]] Result send(std::span<const uint8_t> aData,
                 uint8_t aPayloadType, uint64_t aPts, uint64_t aDts,
                 uint32_t aPayloadCode, uint8_t aStreamId, uint8_t aFlags = Flags::NONE) {
-        return send(aData.data(), aData.size(), aPayloadType, aPts, aDts,
-                    aPayloadCode, aStreamId, aFlags);
-    }
 
-    // Pack and send data
-    [[nodiscard]] Result send(const uint8_t* apData, size_t aSize,
-                uint8_t aPayloadType, uint64_t aPts, uint64_t aDts,
-                uint32_t aPayloadCode, uint8_t aStreamId, uint8_t aFlags = Flags::NONE) {
-
-        if (!apData || aSize == 0) [[unlikely]] {
+        if (aData.empty()) [[unlikely]] {
             return Result::INVALID_PARAMETER;
         }
 
@@ -200,13 +184,13 @@ public:
         }
 
         // Single small frame? Use Type2 only
-        if (aSize <= lType2PayloadSize) [[likely]] {
-            return sendType2Only(apData, aSize, aPayloadType, aPts, lDtsPtsDiff,
+        if (aData.size() <= lType2PayloadSize) [[likely]] {
+            return sendType2Only(aData.data(), aData.size(), aPayloadType, aPts, lDtsPtsDiff,
                                  aPayloadCode, aStreamId, aFlags);
         }
 
         // Multiple fragments needed
-        return sendFragmented(apData, aSize, aPayloadType, aPts, lDtsPtsDiff,
+        return sendFragmented(aData.data(), aData.size(), aPayloadType, aPts, lDtsPtsDiff,
                               aPayloadCode, aStreamId, aFlags, lType1PayloadSize);
     }
 
@@ -214,17 +198,13 @@ public:
     [[nodiscard]] Result send(const std::vector<uint8_t>& aData,
                 uint8_t aPayloadType, uint64_t aPts, uint64_t aDts,
                 uint32_t aPayloadCode, uint8_t aStreamId, uint8_t aFlags = Flags::NONE) {
-        return send(aData.data(), aData.size(), aPayloadType, aPts, aDts,
+        return send(std::span<const uint8_t>(aData), aPayloadType, aPts, aDts,
                     aPayloadCode, aStreamId, aFlags);
     }
 
 private:
     void invokeCallback(size_t aSize, uint8_t aStreamId) {
-        if (mCallbackSpan) [[likely]] {
-            mCallbackSpan(std::span<const uint8_t>(mSendBuffer.data(), aSize), aStreamId);
-        } else if (mCallback) {
-            mCallback(mSendBuffer.data(), aSize, aStreamId);
-        }
+        mCallback(std::span<const uint8_t>(mSendBuffer.data(), aSize), aStreamId);
     }
 
     Result sendType2Only(const uint8_t* apData, size_t aSize,
@@ -355,20 +335,33 @@ private:
     uint16_t mSuperFrameNo = 0;
     std::mutex mMutex;
     std::vector<uint8_t> mSendBuffer;
-    SendCallback mCallback;
-    SendCallbackSpan mCallbackSpan;
+    [[no_unique_address]] SendCallbackT mCallback;
 };
+
+// Deduction guide for Sender
+template<typename SendCallbackT>
+Sender(uint16_t, SendCallbackT) -> Sender<SendCallbackT>;
+
+// Factory function for easier instantiation
+template<typename SendCallbackT, uint16_t BUFFER_SIZE = DEFAULT_BUFFER_SIZE>
+    requires SendCallbackConcept<SendCallbackT>
+[[nodiscard]] auto makeSender(uint16_t aMtu, SendCallbackT aCallback) {
+    return Sender<SendCallbackT, BUFFER_SIZE>(aMtu, std::move(aCallback));
+}
 
 //------------------------------------------------------------------------------
 // Receiver: Reassembles EFP fragments into SuperFrames
+// Template callback for zero-overhead invocation (no std::function)
 //------------------------------------------------------------------------------
-template<uint16_t BUFFER_SIZE = DEFAULT_BUFFER_SIZE>
-    requires ValidBufferSize<BUFFER_SIZE>
+template<typename ReceiveCallbackT, uint16_t BUFFER_SIZE = DEFAULT_BUFFER_SIZE>
+    requires ValidBufferSize<BUFFER_SIZE> && ReceiveCallbackConcept<ReceiveCallbackT>
 class Receiver {
 public:
-    explicit Receiver(uint32_t aTimeoutMs = 100, uint32_t aHolTimeoutMs = 0,
+    explicit Receiver(ReceiveCallbackT aCallback, uint32_t aTimeoutMs = 100,
+                      uint32_t aHolTimeoutMs = 0,
                       ReceiverMode aMode = ReceiverMode::THREADED)
-        : mTimeoutMs(aTimeoutMs), mHolTimeoutMs(aHolTimeoutMs), mMode(aMode) {
+        : mCallback(std::move(aCallback)), mTimeoutMs(aTimeoutMs),
+          mHolTimeoutMs(aHolTimeoutMs), mMode(aMode) {
 
         mpBuckets = new Bucket[BUFFER_SIZE + 1];
 
@@ -397,37 +390,27 @@ public:
     // Get version
     [[nodiscard]] static consteval uint16_t version() noexcept { return VERSION; }
 
-    // Set receive callback
-    void setCallback(ReceiveCallback aCallback) {
-        mCallback = std::move(aCallback);
-    }
-
-    // Receive a fragment using span (C++20 preferred API)
+    // Receive a fragment using span (primary API)
     [[nodiscard]] Result receive(std::span<const uint8_t> aData, uint8_t aSourceId = 0) {
-        return receive(aData.data(), aData.size(), aSourceId);
-    }
-
-    // Receive a fragment
-    [[nodiscard]] Result receive(const uint8_t* apData, size_t aSize, uint8_t aSourceId = 0) {
-        if (!apData || aSize == 0) [[unlikely]] {
+        if (aData.empty()) [[unlikely]] {
             return Result::INVALID_PARAMETER;
         }
 
-        auto lType = getFrameType(apData[0]);
+        auto lType = getFrameType(aData[0]);
         Result lResult;
 
         switch (lType) {
             case FrameType::TYPE0:
-                lResult = handleType0(apData, aSize, aSourceId);
+                lResult = handleType0(aData.data(), aData.size(), aSourceId);
                 break;
             case FrameType::TYPE1:
-                lResult = handleType1(apData, aSize, aSourceId);
+                lResult = handleType1(aData.data(), aData.size(), aSourceId);
                 break;
             case FrameType::TYPE2:
-                lResult = handleType2(apData, aSize, aSourceId);
+                lResult = handleType2(aData.data(), aData.size(), aSourceId);
                 break;
             case FrameType::TYPE3:
-                lResult = handleType3(apData, aSize, aSourceId);
+                lResult = handleType3(aData.data(), aData.size(), aSourceId);
                 break;
             default:
                 return Result::INVALID_PARAMETER;
@@ -444,7 +427,7 @@ public:
 
     // Convenience overload for vector
     [[nodiscard]] Result receive(const std::vector<uint8_t>& aData, uint8_t aSourceId = 0) {
-        return receive(aData.data(), aData.size(), aSourceId);
+        return receive(std::span<const uint8_t>(aData), aSourceId);
     }
 
     // For RUN_TO_COMPLETION mode: process timeouts and deliver frames
@@ -884,7 +867,7 @@ private:
             mDeliveryQueue.push_back(std::move(apBucket->mpFrame));
             mDeliveryReady = true;
             mDeliveryCondition.notify_one();
-        } else if (mCallback) {
+        } else {
             mCallback(std::move(apBucket->mpFrame));
         }
 
@@ -946,12 +929,13 @@ private:
                 }
             }
 
-            if (lpFrame && mCallback) [[likely]] {
+            if (lpFrame) [[likely]] {
                 mCallback(std::move(lpFrame));
             }
         }
     }
 
+    [[no_unique_address]] ReceiveCallbackT mCallback;
     uint32_t mTimeoutMs;
     uint32_t mHolTimeoutMs;
     ReceiverMode mMode;
@@ -973,9 +957,22 @@ private:
     std::deque<SuperFramePtr> mDeliveryQueue;
     std::condition_variable mDeliveryCondition;
     bool mDeliveryReady = false;
-
-    ReceiveCallback mCallback;
 };
+
+// Deduction guide for Receiver
+template<typename ReceiveCallbackT>
+Receiver(ReceiveCallbackT, uint32_t = 100, uint32_t = 0, ReceiverMode = ReceiverMode::THREADED)
+    -> Receiver<ReceiveCallbackT>;
+
+// Factory function for easier instantiation
+template<typename ReceiveCallbackT, uint16_t BUFFER_SIZE = DEFAULT_BUFFER_SIZE>
+    requires ReceiveCallbackConcept<ReceiveCallbackT>
+[[nodiscard]] auto makeReceiver(ReceiveCallbackT aCallback, uint32_t aTimeoutMs = 100,
+                                 uint32_t aHolTimeoutMs = 0,
+                                 ReceiverMode aMode = ReceiverMode::THREADED) {
+    return Receiver<ReceiveCallbackT, BUFFER_SIZE>(std::move(aCallback), aTimeoutMs,
+                                                    aHolTimeoutMs, aMode);
+}
 
 } // namespace efp
 

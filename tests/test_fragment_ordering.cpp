@@ -19,10 +19,10 @@
 constexpr uint16_t MTU = 1456;
 
 template<typename Predicate>
-bool waitFor(Predicate pred, std::chrono::milliseconds timeout = std::chrono::milliseconds(500)) {
-    auto start = std::chrono::steady_clock::now();
-    while (!pred()) {
-        if (std::chrono::steady_clock::now() - start > timeout) {
+bool waitFor(Predicate aPred, std::chrono::milliseconds aTimeout = std::chrono::milliseconds(500)) {
+    auto lStart = std::chrono::steady_clock::now();
+    while (!aPred()) {
+        if (std::chrono::steady_clock::now() - lStart > aTimeout) {
             return false;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -38,60 +38,53 @@ TEST_SUITE("Fragment Ordering") {
     TEST_CASE("Swap fragment order 1-3-2-4-5-6 (UnitTest7)") {
         const size_t FRAME_SIZE = ((MTU - sizeof(efp::FrameType1)) * 5) + 12;
 
-        efp::Sender sender(MTU);
-        efp::Receiver receiver(50, 20);
+        std::atomic<bool> lDataReceived{false};
+        size_t lPacketNumber = 0;
+        std::vector<uint8_t> lSavedSubPacketNumber2;
 
-        std::atomic<bool> dataReceived{false};
+        auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
+            CHECK(apFrame->mStreamId == 8);
+            CHECK(apFrame->mPts == 1001);
+            CHECK(apFrame->mPayloadCode == 2);
+            CHECK(!apFrame->mBroken);
+            CHECK(apFrame->mSize == FRAME_SIZE);
 
-        size_t packetNumber = 0;
-        std::vector<uint8_t> savedSubPacketNumber2;
+            uint8_t lVectorChecker = 0;
+            for (size_t lX = 0; lX < apFrame->mSize; lX++) {
+                CHECK(apFrame->mpData[lX] == lVectorChecker++);
+            }
+            lDataReceived = true;
+        }, 50, 20);
 
-        sender.setCallback([&](const uint8_t* data, size_t size, uint8_t streamId) {
-            CHECK(streamId == 8);
-            packetNumber++;
+        auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t aStreamId) {
+            CHECK(aStreamId == 8);
+            lPacketNumber++;
 
-            std::vector<uint8_t> packet(data, data + size);
+            std::vector<uint8_t> lPacket(aData.begin(), aData.end());
 
-            if (packetNumber == 2) {
-                // Hold packet number 2
-                savedSubPacketNumber2 = packet;
+            if (lPacketNumber == 2) {
+                lSavedSubPacketNumber2 = lPacket;
                 return;
-            } else if (packetNumber == 3) {
-                // First send packet number 3, then packet number 2
-                auto result = receiver.receive(packet.data(), packet.size(), 0);
-                CHECK(result == efp::Result::OK);
+            } else if (lPacketNumber == 3) {
+                auto lResult = lReceiver.receive(std::span<const uint8_t>(lPacket), 0);
+                CHECK(lResult == efp::Result::OK);
 
-                result = receiver.receive(savedSubPacketNumber2.data(), savedSubPacketNumber2.size(), 0);
-                CHECK(result == efp::Result::OK);
+                lResult = lReceiver.receive(std::span<const uint8_t>(lSavedSubPacketNumber2), 0);
+                CHECK(lResult == efp::Result::OK);
                 return;
             }
 
-            auto result = receiver.receive(packet.data(), packet.size(), 0);
-            CHECK(result == efp::Result::OK);
+            auto lResult = lReceiver.receive(aData, 0);
+            CHECK(lResult == efp::Result::OK);
         });
 
-        receiver.setCallback([&](efp::SuperFramePtr frame) {
-            CHECK(frame->mStreamId == 8);
-            CHECK(frame->mPts == 1001);
-            CHECK(frame->mPayloadCode == 2);
-            CHECK(!frame->mBroken);
-            CHECK(frame->mSize == FRAME_SIZE);
+        std::vector<uint8_t> lMydata(FRAME_SIZE);
+        std::generate(lMydata.begin(), lMydata.end(), [lN = 0]() mutable { return (uint8_t)(lN++); });
 
-            // Verify data integrity
-            uint8_t vectorChecker = 0;
-            for (size_t x = 0; x < frame->mSize; x++) {
-                CHECK(frame->mpData[x] == vectorChecker++);
-            }
-            dataReceived = true;
-        });
+        auto lResult = lSender.send(lMydata, 0x02, 1001, 1, 2, 8);
+        CHECK(lResult == efp::Result::OK);
 
-        std::vector<uint8_t> mydata(FRAME_SIZE);
-        std::generate(mydata.begin(), mydata.end(), [n = 0]() mutable { return static_cast<uint8_t>(n++); });
-
-        auto result = sender.send(mydata, 0x02, 1001, 1, 2, 8);
-        CHECK(result == efp::Result::OK);
-
-        REQUIRE(waitFor([&]() { return dataReceived.load(); }));
+        REQUIRE(waitFor([&]() { return lDataReceived.load(); }));
     }
 
     // =========================================================================
@@ -100,55 +93,47 @@ TEST_SUITE("Fragment Ordering") {
     TEST_CASE("Receive Type2 first then Type1 (UnitTest8)") {
         const size_t FRAME_SIZE = ((MTU - sizeof(efp::FrameType1)) * 5) + 12;
 
-        efp::Sender sender(MTU);
-        efp::Receiver receiver(50, 20);
+        std::atomic<bool> lDataReceived{false};
+        std::vector<std::vector<uint8_t>> lDataKeptBack;
 
-        std::atomic<bool> dataReceived{false};
+        auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
+            CHECK(apFrame->mStreamId == 8);
+            CHECK(apFrame->mPts == 1001);
+            CHECK(apFrame->mPayloadCode == 2);
+            CHECK(!apFrame->mBroken);
+            CHECK(apFrame->mSize == FRAME_SIZE);
 
-        std::vector<std::vector<uint8_t>> dataKeptBack;
+            uint8_t lVectorChecker = 0;
+            for (size_t lX = 0; lX < apFrame->mSize; lX++) {
+                CHECK(apFrame->mpData[lX] == lVectorChecker++);
+            }
+            lDataReceived = true;
+        }, 50, 20);
 
-        sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-            std::vector<uint8_t> packet(data, data + size);
+        auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
+            std::vector<uint8_t> lPacket(aData.begin(), aData.end());
 
-            if ((data[0] & 0x0f) == static_cast<uint8_t>(efp::FrameType::TYPE2)) {
-                // Type2 fragment => last fragment. Send it first
-                auto result = receiver.receive(packet.data(), packet.size(), 0);
-                CHECK(result == efp::Result::OK);
+            if ((aData[0] & 0x0f) == (uint8_t)(efp::FrameType::TYPE2)) {
+                auto lResult = lReceiver.receive(aData, 0);
+                CHECK(lResult == efp::Result::OK);
 
-                // Send the rest of the fragments, swap first two
-                std::swap(dataKeptBack[0], dataKeptBack[1]);
-                for (auto& x : dataKeptBack) {
-                    result = receiver.receive(x.data(), x.size(), 0);
-                    CHECK(result == efp::Result::OK);
+                std::swap(lDataKeptBack[0], lDataKeptBack[1]);
+                for (auto& lX : lDataKeptBack) {
+                    lResult = lReceiver.receive(std::span<const uint8_t>(lX), 0);
+                    CHECK(lResult == efp::Result::OK);
                 }
             } else {
-                // Not the last fragment, keep it back
-                dataKeptBack.push_back(packet);
+                lDataKeptBack.push_back(lPacket);
             }
         });
 
-        receiver.setCallback([&](efp::SuperFramePtr frame) {
-            CHECK(frame->mStreamId == 8);
-            CHECK(frame->mPts == 1001);
-            CHECK(frame->mPayloadCode == 2);
-            CHECK(!frame->mBroken);
-            CHECK(frame->mSize == FRAME_SIZE);
+        std::vector<uint8_t> lMydata(FRAME_SIZE);
+        std::generate(lMydata.begin(), lMydata.end(), [lN = 0]() mutable { return (uint8_t)(lN++); });
 
-            // Verify data integrity
-            uint8_t vectorChecker = 0;
-            for (size_t x = 0; x < frame->mSize; x++) {
-                CHECK(frame->mpData[x] == vectorChecker++);
-            }
-            dataReceived = true;
-        });
+        auto lResult = lSender.send(lMydata, 0x02, 1001, 1, 2, 8);
+        CHECK(lResult == efp::Result::OK);
 
-        std::vector<uint8_t> mydata(FRAME_SIZE);
-        std::generate(mydata.begin(), mydata.end(), [n = 0]() mutable { return static_cast<uint8_t>(n++); });
-
-        auto result = sender.send(mydata, 0x02, 1001, 1, 2, 8);
-        CHECK(result == efp::Result::OK);
-
-        REQUIRE(waitFor([&]() { return dataReceived.load(); }));
+        REQUIRE(waitFor([&]() { return lDataReceived.load(); }));
     }
 
     // =========================================================================
@@ -157,278 +142,55 @@ TEST_SUITE("Fragment Ordering") {
     TEST_CASE("Two Type2 frames out of order (UnitTest10)") {
         const size_t FRAME_SIZE = MTU - sizeof(efp::FrameType2);
 
-        efp::Sender sender(MTU);
-        efp::Receiver receiver(50, 20);
+        std::atomic<size_t> lDataReceived{0};
+        size_t lPacketNumber = 0;
+        std::vector<uint8_t> lFragmentKeptBack;
+        size_t lReceivedFrameNumber = 0;
 
-        std::atomic<size_t> dataReceived{0};
+        auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
+            lReceivedFrameNumber++;
 
-        size_t packetNumber = 0;
-        std::vector<uint8_t> fragmentKeptBack;
-
-        sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-            std::vector<uint8_t> packet(data, data + size);
-            packetNumber++;
-
-            if (packetNumber == 1) {
-                fragmentKeptBack = packet;
-            } else if (packetNumber == 2) {
-                // Send packet 2 first
-                auto result = receiver.receive(packet.data(), packet.size(), 0);
-                CHECK(result == efp::Result::OK);
-
-                // Then send packet 1
-                result = receiver.receive(fragmentKeptBack.data(), fragmentKeptBack.size(), 0);
-                CHECK(result == efp::Result::OK);
+            if (lReceivedFrameNumber == 1) {
+                CHECK(apFrame->mPts == 1001);
+            }
+            if (lReceivedFrameNumber == 2) {
+                CHECK(apFrame->mPts == 1002);
             }
 
-            CHECK(packetNumber <= 2);
-        });
+            CHECK(apFrame->mStreamId == 1);
+            CHECK(apFrame->mPayloadCode == 0);
+            CHECK(!apFrame->mBroken);
+            CHECK(apFrame->mSize == FRAME_SIZE);
 
-        size_t receivedFrameNumber = 0;
-        receiver.setCallback([&](efp::SuperFramePtr frame) {
-            receivedFrameNumber++;
+            lDataReceived++;
+        }, 50, 20);
 
-            if (receivedFrameNumber == 1) {
-                CHECK(frame->mPts == 1001);
+        auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
+            std::vector<uint8_t> lPacket(aData.begin(), aData.end());
+            lPacketNumber++;
+
+            if (lPacketNumber == 1) {
+                lFragmentKeptBack = lPacket;
+            } else if (lPacketNumber == 2) {
+                auto lResult = lReceiver.receive(aData, 0);
+                CHECK(lResult == efp::Result::OK);
+
+                lResult = lReceiver.receive(std::span<const uint8_t>(lFragmentKeptBack), 0);
+                CHECK(lResult == efp::Result::OK);
             }
-            if (receivedFrameNumber == 2) {
-                CHECK(frame->mPts == 1002);
-            }
 
-            CHECK(frame->mStreamId == 1);
-            CHECK(frame->mPayloadCode == 0);
-            CHECK(!frame->mBroken);
-            CHECK(frame->mSize == FRAME_SIZE);
-
-            dataReceived++;
+            CHECK(lPacketNumber <= 2);
         });
 
-        std::vector<uint8_t> mydata(FRAME_SIZE);
+        std::vector<uint8_t> lMydata(FRAME_SIZE);
 
-        auto result = sender.send(mydata, 0x83, 1001, 1, 0, 1);
-        CHECK(result == efp::Result::OK);
+        auto lResult = lSender.send(lMydata, 0x83, 1001, 1, 0, 1);
+        CHECK(lResult == efp::Result::OK);
 
-        result = sender.send(mydata, 0x83, 1002, 2, 0, 1);
-        CHECK(result == efp::Result::OK);
+        lResult = lSender.send(lMydata, 0x83, 1002, 2, 0, 1);
+        CHECK(lResult == efp::Result::OK);
 
-        REQUIRE(waitFor([&]() { return dataReceived.load() == 2; }));
-    }
-
-    // =========================================================================
-    // UnitTest11: 5 packets in reversed order, drop middle
-    // =========================================================================
-    TEST_CASE("Five packets reversed order drop middle (UnitTest11)") {
-        const size_t FRAME_SIZE = ((MTU - sizeof(efp::FrameType1)) * 5) + 12;
-
-        efp::Sender sender(MTU);
-        efp::Receiver receiver(50, 20);
-
-        std::atomic<size_t> dataReceived{0};
-
-        size_t sentSuperFrameNumber = 0;
-        std::vector<std::vector<uint8_t>> keptBackFragments;
-        std::vector<std::vector<std::vector<uint8_t>>> keptBackSuperFrames;
-
-        sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-            std::vector<uint8_t> packet(data, data + size);
-
-            if ((data[0] & 0x0f) == static_cast<uint8_t>(efp::FrameType::TYPE2)) {
-                sentSuperFrameNumber++;
-                keptBackFragments.push_back(packet);
-                keptBackSuperFrames.push_back(keptBackFragments);
-
-                if (sentSuperFrameNumber == 5) {
-                    // Deliver in reversed order, skip packet 3
-                    for (size_t superFrame = keptBackSuperFrames.size(); superFrame > 0; superFrame--) {
-                        if (superFrame == 3) {
-                            continue;  // Drop packet number 3
-                        }
-
-                        for (auto& x : keptBackSuperFrames[superFrame - 1]) {
-                            auto result = receiver.receive(x.data(), x.size(), 0);
-                            CHECK(result == efp::Result::OK);
-                        }
-                    }
-                }
-                keptBackFragments.clear();
-            } else {
-                keptBackFragments.push_back(packet);
-            }
-        });
-
-        size_t receivedFrameNumber = 0;
-        int64_t nextExpectedPts = 1001;
-
-        receiver.setCallback([&](efp::SuperFramePtr frame) {
-            receivedFrameNumber++;
-            CHECK(frame->mPts == nextExpectedPts);
-            // Expect pts 1003 to be missing
-            nextExpectedPts += (nextExpectedPts == 1002 ? 2 : 1);
-
-            CHECK(frame->mStreamId == 1);
-            CHECK(frame->mPayloadCode == 0);
-            CHECK(!frame->mBroken);
-            CHECK(frame->mSize == FRAME_SIZE);
-
-            dataReceived++;
-        });
-
-        std::vector<uint8_t> mydata(FRAME_SIZE);
-
-        for (size_t packetNumber = 0; packetNumber < 5; packetNumber++) {
-            auto result = sender.send(mydata, 0x83, packetNumber + 1001, packetNumber + 1, 0, 1);
-            REQUIRE(result == efp::Result::OK);
-        }
-
-        REQUIRE(waitFor([&]() { return dataReceived.load() == 4; }));
-    }
-
-    // =========================================================================
-    // UnitTest12: Reversed order + reversed fragment order within each
-    // =========================================================================
-    TEST_CASE("Reversed order with reversed fragments (UnitTest12)") {
-        const size_t FRAME_SIZE = ((MTU - sizeof(efp::FrameType1)) * 5) + 12;
-
-        efp::Sender sender(MTU);
-        efp::Receiver receiver(100, 40);
-
-        std::atomic<size_t> dataReceived{0};
-
-        size_t sentSuperFrameNumber = 0;
-        std::vector<std::vector<uint8_t>> keptBackFragments;
-        std::vector<std::vector<std::vector<uint8_t>>> keptBackSuperFrames;
-
-        sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-            std::vector<uint8_t> packet(data, data + size);
-
-            if ((data[0] & 0x0f) == static_cast<uint8_t>(efp::FrameType::TYPE2)) {
-                sentSuperFrameNumber++;
-                keptBackFragments.push_back(packet);
-                keptBackSuperFrames.push_back(keptBackFragments);
-
-                if (sentSuperFrameNumber == 5) {
-                    // Deliver superframes in reverse, and fragments in reverse
-                    for (size_t item = keptBackSuperFrames.size(); item > 0; item--) {
-                        if (item == 3) {
-                            continue;  // Drop packet 3
-                        }
-                        std::vector<std::vector<uint8_t>> superFrame = keptBackSuperFrames[item - 1];
-                        for (size_t fragment = superFrame.size(); fragment > 0; fragment--) {
-                            auto result = receiver.receive(superFrame[fragment - 1].data(),
-                                                          superFrame[fragment - 1].size(), 0);
-                            CHECK(result == efp::Result::OK);
-                        }
-                    }
-                }
-                keptBackFragments.clear();
-                return;
-            }
-            keptBackFragments.push_back(packet);
-        });
-
-        size_t receivedFrameNumber = 0;
-        int64_t nextExpectedPts = 1001;
-
-        receiver.setCallback([&](efp::SuperFramePtr frame) {
-            receivedFrameNumber++;
-            CHECK(frame->mPts == nextExpectedPts);
-            // Expect pts 1003 to be missing
-            nextExpectedPts += (nextExpectedPts == 1002 ? 2 : 1);
-
-            CHECK(frame->mStreamId == 1);
-            CHECK(frame->mPayloadCode == 0);
-            CHECK(!frame->mBroken);
-            CHECK(frame->mSize == FRAME_SIZE);
-
-            dataReceived++;
-        });
-
-        std::vector<uint8_t> mydata(FRAME_SIZE);
-
-        for (size_t packetNumber = 0; packetNumber < 5; packetNumber++) {
-            auto result = sender.send(mydata, 0x83, packetNumber + 1001, packetNumber + 1, 0, 1);
-            REQUIRE(result == efp::Result::OK);
-        }
-
-        REQUIRE(waitFor([&]() { return dataReceived.load() == 4; }));
-    }
-
-    // =========================================================================
-    // UnitTest23: 10 packets, drop 4&5, deliver rest reversed with reversed fragments
-    // =========================================================================
-    TEST_CASE("Ten packets drop 4 and 5 reversed (UnitTest23)") {
-        const size_t FRAME_SIZE = ((MTU - sizeof(efp::FrameType1)) * 5) + 12;
-
-        efp::Sender sender(MTU);
-        efp::Receiver receiver(100, 40);
-
-        std::atomic<size_t> dataReceived{0};
-
-        size_t sentSuperFrameNumber = 0;
-        std::vector<std::vector<uint8_t>> keptBackFragments;
-        std::vector<std::vector<std::vector<uint8_t>>> keptBackSuperFrames;
-
-        sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-            std::vector<uint8_t> packet(data, data + size);
-
-            if ((data[0] & 0x0f) == static_cast<uint8_t>(efp::FrameType::TYPE2)) {
-                sentSuperFrameNumber++;
-                keptBackFragments.push_back(packet);
-                keptBackSuperFrames.push_back(keptBackFragments);
-
-                if (sentSuperFrameNumber == 10) {
-                    for (size_t item = keptBackSuperFrames.size(); item > 0; item--) {
-                        if (item == 4 || item == 5) {
-                            continue;  // Drop packets 4 and 5
-                        }
-                        std::vector<std::vector<uint8_t>> superFrame = keptBackSuperFrames[item - 1];
-                        for (size_t fragment = superFrame.size(); fragment > 0; fragment--) {
-                            auto result = receiver.receive(superFrame[fragment - 1].data(),
-                                                          superFrame[fragment - 1].size(), 0);
-                            CHECK(result == efp::Result::OK);
-                        }
-                    }
-                }
-                keptBackFragments.clear();
-                return;
-            }
-            keptBackFragments.push_back(packet);
-        });
-
-        size_t receivedFrameNumber = 0;
-        int64_t nextExpectedPts = 1001;
-        uint16_t lastReceivedSuperFrame = 0;
-
-        receiver.setCallback([&](efp::SuperFramePtr frame) {
-            receivedFrameNumber++;
-            CHECK(frame->mPts == nextExpectedPts);
-            // Expect pts 1004 and 1005 to be missing
-            nextExpectedPts += (nextExpectedPts == 1003 ? 3 : 1);
-
-            CHECK(frame->mStreamId == 1);
-            CHECK(frame->mPayloadCode == 0);
-            CHECK(!frame->mBroken);
-            CHECK(frame->mSize == FRAME_SIZE);
-
-            if (frame->mPts == 1006) {
-                // Check that we know we lost 2 super frames here
-                CHECK(lastReceivedSuperFrame + 3 == frame->mSuperFrameNo);
-            } else if (frame->mPts != 1001) {
-                CHECK(lastReceivedSuperFrame + 1 == frame->mSuperFrameNo);
-            }
-            lastReceivedSuperFrame = frame->mSuperFrameNo;
-
-            dataReceived++;
-        });
-
-        std::vector<uint8_t> mydata(FRAME_SIZE);
-
-        for (size_t packetNumber = 0; packetNumber < 10; packetNumber++) {
-            auto result = sender.send(mydata, 0x83, packetNumber + 1001, packetNumber + 1, 0, 1);
-            REQUIRE(result == efp::Result::OK);
-        }
-
-        REQUIRE(waitFor([&]() { return dataReceived.load() == 8; }));
+        REQUIRE(waitFor([&]() { return lDataReceived.load() == 2; }));
     }
 
     // =========================================================================
@@ -437,46 +199,228 @@ TEST_SUITE("Fragment Ordering") {
     TEST_CASE("Extremely shuffled fragments (random order)") {
         const size_t FRAME_SIZE = ((MTU - sizeof(efp::FrameType1)) * 10) + 50;
 
-        efp::Sender sender(MTU);
-        efp::Receiver receiver(100, 0);
+        std::atomic<bool> lDataReceived{false};
+        std::vector<std::vector<uint8_t>> lAllFragments;
 
-        std::atomic<bool> dataReceived{false};
+        auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
+            CHECK(apFrame->mSize == FRAME_SIZE);
+            CHECK(!apFrame->mBroken);
 
-        std::vector<std::vector<uint8_t>> allFragments;
-
-        sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-            allFragments.emplace_back(data, data + size);
-        });
-
-        std::vector<uint8_t> mydata(FRAME_SIZE);
-        std::generate(mydata.begin(), mydata.end(), [n = 0]() mutable { return static_cast<uint8_t>(n++); });
-
-        auto result = sender.send(mydata, 0x01, 1000, 1000, 0, 1);
-        CHECK(result == efp::Result::OK);
-
-        // Shuffle fragments randomly
-        std::mt19937 rng(42);
-        std::shuffle(allFragments.begin(), allFragments.end(), rng);
-
-        receiver.setCallback([&](efp::SuperFramePtr frame) {
-            CHECK(frame->mSize == FRAME_SIZE);
-            CHECK(!frame->mBroken);
-
-            // Verify data
-            uint8_t vectorChecker = 0;
-            for (size_t x = 0; x < frame->mSize; x++) {
-                CHECK(frame->mpData[x] == vectorChecker++);
+            uint8_t lVectorChecker = 0;
+            for (size_t lX = 0; lX < apFrame->mSize; lX++) {
+                CHECK(apFrame->mpData[lX] == lVectorChecker++);
             }
-            dataReceived = true;
+            lDataReceived = true;
+        }, 100, 0);
+
+        auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
+            lAllFragments.emplace_back(aData.begin(), aData.end());
         });
 
-        // Send shuffled fragments
-        for (auto& frag : allFragments) {
-            (void)receiver.receive(frag.data(), frag.size(), 0);
+        std::vector<uint8_t> lMydata(FRAME_SIZE);
+        std::generate(lMydata.begin(), lMydata.end(), [lN = 0]() mutable { return (uint8_t)(lN++); });
+
+        auto lResult = lSender.send(lMydata, 0x01, 1000, 1000, 0, 1);
+        CHECK(lResult == efp::Result::OK);
+
+        std::mt19937 lRng(42);
+        std::shuffle(lAllFragments.begin(), lAllFragments.end(), lRng);
+
+        for (auto& lFrag : lAllFragments) {
+            (void)lReceiver.receive(std::span<const uint8_t>(lFrag), 0);
         }
 
-        REQUIRE(waitFor([&]() { return dataReceived.load(); }));
+        REQUIRE(waitFor([&]() { return lDataReceived.load(); }));
+    }
+
+    // =========================================================================
+    // UnitTest11: 5 packets in reversed order, drop middle
+    // =========================================================================
+    TEST_CASE("Five packets reversed order drop middle (UnitTest11)") {
+        const size_t FRAME_SIZE = ((MTU - sizeof(efp::FrameType1)) * 5) + 12;
+
+        std::atomic<size_t> lDataReceived{0};
+        size_t lSentSuperFrameNumber = 0;
+        std::vector<std::vector<uint8_t>> lKeptBackFragments;
+        std::vector<std::vector<std::vector<uint8_t>>> lKeptBackSuperFrames;
+        size_t lReceivedFrameNumber = 0;
+        int64_t lNextExpectedPts = 1001;
+
+        auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
+            lReceivedFrameNumber++;
+            CHECK(apFrame->mPts == lNextExpectedPts);
+            lNextExpectedPts += (lNextExpectedPts == 1002 ? 2 : 1);
+
+            CHECK(apFrame->mStreamId == 1);
+            CHECK(apFrame->mPayloadCode == 0);
+            CHECK(!apFrame->mBroken);
+            CHECK(apFrame->mSize == FRAME_SIZE);
+
+            lDataReceived++;
+        }, 50, 20);
+
+        auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
+            std::vector<uint8_t> lPacket(aData.begin(), aData.end());
+
+            if ((aData[0] & 0x0f) == (uint8_t)(efp::FrameType::TYPE2)) {
+                lSentSuperFrameNumber++;
+                lKeptBackFragments.push_back(lPacket);
+                lKeptBackSuperFrames.push_back(lKeptBackFragments);
+
+                if (lSentSuperFrameNumber == 5) {
+                    for (size_t lSuperFrame = lKeptBackSuperFrames.size(); lSuperFrame > 0; lSuperFrame--) {
+                        if (lSuperFrame == 3) continue;
+
+                        for (auto& lX : lKeptBackSuperFrames[lSuperFrame - 1]) {
+                            auto lResult = lReceiver.receive(std::span<const uint8_t>(lX), 0);
+                            CHECK(lResult == efp::Result::OK);
+                        }
+                    }
+                }
+                lKeptBackFragments.clear();
+            } else {
+                lKeptBackFragments.push_back(lPacket);
+            }
+        });
+
+        std::vector<uint8_t> lMydata(FRAME_SIZE);
+
+        for (size_t lPacketNumber = 0; lPacketNumber < 5; lPacketNumber++) {
+            auto lResult = lSender.send(lMydata, 0x83, lPacketNumber + 1001, lPacketNumber + 1, 0, 1);
+            REQUIRE(lResult == efp::Result::OK);
+        }
+
+        REQUIRE(waitFor([&]() { return lDataReceived.load() == 4; }));
+    }
+
+    // =========================================================================
+    // UnitTest12: Reversed order + reversed fragment order within each
+    // =========================================================================
+    TEST_CASE("Reversed order with reversed fragments (UnitTest12)") {
+        const size_t FRAME_SIZE = ((MTU - sizeof(efp::FrameType1)) * 5) + 12;
+
+        std::atomic<size_t> lDataReceived{0};
+        size_t lSentSuperFrameNumber = 0;
+        std::vector<std::vector<uint8_t>> lKeptBackFragments;
+        std::vector<std::vector<std::vector<uint8_t>>> lKeptBackSuperFrames;
+        size_t lReceivedFrameNumber = 0;
+        int64_t lNextExpectedPts = 1001;
+
+        auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
+            lReceivedFrameNumber++;
+            CHECK(apFrame->mPts == lNextExpectedPts);
+            lNextExpectedPts += (lNextExpectedPts == 1002 ? 2 : 1);
+
+            CHECK(apFrame->mStreamId == 1);
+            CHECK(apFrame->mPayloadCode == 0);
+            CHECK(!apFrame->mBroken);
+            CHECK(apFrame->mSize == FRAME_SIZE);
+
+            lDataReceived++;
+        }, 100, 40);
+
+        auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
+            std::vector<uint8_t> lPacket(aData.begin(), aData.end());
+
+            if ((aData[0] & 0x0f) == (uint8_t)(efp::FrameType::TYPE2)) {
+                lSentSuperFrameNumber++;
+                lKeptBackFragments.push_back(lPacket);
+                lKeptBackSuperFrames.push_back(lKeptBackFragments);
+
+                if (lSentSuperFrameNumber == 5) {
+                    for (size_t lItem = lKeptBackSuperFrames.size(); lItem > 0; lItem--) {
+                        if (lItem == 3) continue;
+                        auto& lSuperFrame = lKeptBackSuperFrames[lItem - 1];
+                        for (size_t lFragment = lSuperFrame.size(); lFragment > 0; lFragment--) {
+                            auto lResult = lReceiver.receive(
+                                std::span<const uint8_t>(lSuperFrame[lFragment - 1]), 0);
+                            CHECK(lResult == efp::Result::OK);
+                        }
+                    }
+                }
+                lKeptBackFragments.clear();
+                return;
+            }
+            lKeptBackFragments.push_back(lPacket);
+        });
+
+        std::vector<uint8_t> lMydata(FRAME_SIZE);
+
+        for (size_t lPacketNumber = 0; lPacketNumber < 5; lPacketNumber++) {
+            auto lResult = lSender.send(lMydata, 0x83, lPacketNumber + 1001, lPacketNumber + 1, 0, 1);
+            REQUIRE(lResult == efp::Result::OK);
+        }
+
+        REQUIRE(waitFor([&]() { return lDataReceived.load() == 4; }));
+    }
+
+    // =========================================================================
+    // UnitTest23: 10 packets, drop 4&5, deliver rest reversed with reversed fragments
+    // =========================================================================
+    TEST_CASE("Ten packets drop 4 and 5 reversed (UnitTest23)") {
+        const size_t FRAME_SIZE = ((MTU - sizeof(efp::FrameType1)) * 5) + 12;
+
+        std::atomic<size_t> lDataReceived{0};
+        size_t lSentSuperFrameNumber = 0;
+        std::vector<std::vector<uint8_t>> lKeptBackFragments;
+        std::vector<std::vector<std::vector<uint8_t>>> lKeptBackSuperFrames;
+        size_t lReceivedFrameNumber = 0;
+        int64_t lNextExpectedPts = 1001;
+        uint16_t lLastReceivedSuperFrame = 0;
+
+        auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
+            lReceivedFrameNumber++;
+            CHECK(apFrame->mPts == lNextExpectedPts);
+            lNextExpectedPts += (lNextExpectedPts == 1003 ? 3 : 1);
+
+            CHECK(apFrame->mStreamId == 1);
+            CHECK(apFrame->mPayloadCode == 0);
+            CHECK(!apFrame->mBroken);
+            CHECK(apFrame->mSize == FRAME_SIZE);
+
+            if (apFrame->mPts == 1006) {
+                CHECK(lLastReceivedSuperFrame + 3 == apFrame->mSuperFrameNo);
+            } else if (apFrame->mPts != 1001) {
+                CHECK(lLastReceivedSuperFrame + 1 == apFrame->mSuperFrameNo);
+            }
+            lLastReceivedSuperFrame = apFrame->mSuperFrameNo;
+
+            lDataReceived++;
+        }, 100, 40);
+
+        auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
+            std::vector<uint8_t> lPacket(aData.begin(), aData.end());
+
+            if ((aData[0] & 0x0f) == (uint8_t)(efp::FrameType::TYPE2)) {
+                lSentSuperFrameNumber++;
+                lKeptBackFragments.push_back(lPacket);
+                lKeptBackSuperFrames.push_back(lKeptBackFragments);
+
+                if (lSentSuperFrameNumber == 10) {
+                    for (size_t lItem = lKeptBackSuperFrames.size(); lItem > 0; lItem--) {
+                        if (lItem == 4 || lItem == 5) continue;
+                        auto& lSuperFrame = lKeptBackSuperFrames[lItem - 1];
+                        for (size_t lFragment = lSuperFrame.size(); lFragment > 0; lFragment--) {
+                            auto lResult = lReceiver.receive(
+                                std::span<const uint8_t>(lSuperFrame[lFragment - 1]), 0);
+                            CHECK(lResult == efp::Result::OK);
+                        }
+                    }
+                }
+                lKeptBackFragments.clear();
+                return;
+            }
+            lKeptBackFragments.push_back(lPacket);
+        });
+
+        std::vector<uint8_t> lMydata(FRAME_SIZE);
+
+        for (size_t lPacketNumber = 0; lPacketNumber < 10; lPacketNumber++) {
+            auto lResult = lSender.send(lMydata, 0x83, lPacketNumber + 1001, lPacketNumber + 1, 0, 1);
+            REQUIRE(lResult == efp::Result::OK);
+        }
+
+        REQUIRE(waitFor([&]() { return lDataReceived.load() == 8; }));
     }
 
 }
-

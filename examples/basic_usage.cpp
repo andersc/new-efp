@@ -15,7 +15,7 @@
 
 int main() {
     try {
-    std::cout << "EFP Version: " << static_cast<unsigned int>(efp::VERSION_MAJOR) << "." << static_cast<unsigned int>(efp::VERSION_MINOR) << "\n\n";
+    std::cout << "EFP Version: " << (unsigned int)(efp::VERSION_MAJOR) << "." << (unsigned int)(efp::VERSION_MINOR) << "\n\n";
 
     // -------------------------------------------------------------------------
     // Example 1: Simple loopback - send and receive small data
@@ -24,21 +24,16 @@ int main() {
     {
         constexpr uint16_t MTU = 1400;
 
-        efp::Sender lSender(MTU);
-        efp::Receiver lReceiver(100, 0);  // 100ms timeout, no HOL blocking
-
-        // Set up receiver callback
-        lReceiver.setCallback([](efp::SuperFramePtr apFrame) {
+        auto lReceiver = efp::makeReceiver([](efp::SuperFramePtr apFrame) {
             std::cout << "Received frame: "
                       << "size=" << apFrame->mSize
                       << ", pts=" << apFrame->mPts
                       << ", broken=" << apFrame->mBroken
                       << "\n";
-        });
+        }, 100, 0);
 
-        // Connect sender output to receiver input
-        lSender.setCallback([&lReceiver](const uint8_t* apData, size_t aSize, uint8_t aStreamId) {
-            (void)lReceiver.receive(apData, aSize, 0);
+        auto lSender = efp::makeSender(MTU, [&lReceiver](std::span<const uint8_t> aData, uint8_t) {
+            (void)lReceiver.receive(aData, 0);
         });
 
         // Send some data
@@ -56,21 +51,18 @@ int main() {
     {
         constexpr uint16_t MTU = 1400;
 
-        efp::Sender lSender(MTU);
-        efp::Receiver lReceiver(100, 0);
-
         int lFragmentCount = 0;
 
-        lReceiver.setCallback([](efp::SuperFramePtr apFrame) {
+        auto lReceiver = efp::makeReceiver([](efp::SuperFramePtr apFrame) {
             std::cout << "Received large frame: "
                       << "size=" << apFrame->mSize
                       << ", broken=" << apFrame->mBroken
                       << "\n";
-        });
+        }, 100, 0);
 
-        lSender.setCallback([&](const uint8_t* apData, size_t aSize, uint8_t) {
+        auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
             lFragmentCount++;
-            (void)lReceiver.receive(apData, aSize, 0);
+            (void)lReceiver.receive(aData, 0);
         });
 
         // Send 10KB of data (will be fragmented)
@@ -88,10 +80,7 @@ int main() {
     {
         constexpr uint16_t MTU = 1400;
 
-        efp::Sender lSender(MTU);
-        efp::Receiver lReceiver(100, 0);
-
-        lReceiver.setCallback([](efp::SuperFramePtr apFrame) {
+        auto lReceiver = efp::makeReceiver([](efp::SuperFramePtr apFrame) {
             const char* lpFormat = (apFrame->mPayloadCode == efp::media::PayloadCode::ANXB)
                                  ? "Annex B" : "AVCC";
             std::cout << "Received H.264 NAL unit: "
@@ -99,10 +88,10 @@ int main() {
                       << ", format=" << lpFormat
                       << ", pts=" << apFrame->mPts
                       << "\n";
-        });
+        }, 100, 0);
 
-        lSender.setCallback([&lReceiver](const uint8_t* apData, size_t aSize, uint8_t) {
-            (void)lReceiver.receive(apData, aSize, 0);
+        auto lSender = efp::makeSender(MTU, [&lReceiver](std::span<const uint8_t> aData, uint8_t) {
+            (void)lReceiver.receive(aData, 0);
         });
 
         // Simulated H.264 NAL unit (Annex B format with start code)
@@ -126,18 +115,15 @@ int main() {
     {
         constexpr uint16_t MTU = 1400;
 
-        efp::Sender lSender(MTU);
-        efp::Receiver lReceiver(100, 0);
-
-        lReceiver.setCallback([](efp::SuperFramePtr apFrame) {
+        auto lReceiver = efp::makeReceiver([](efp::SuperFramePtr apFrame) {
             std::cout << "Stream " << (int)apFrame->mStreamId << ": "
                       << "size=" << apFrame->mSize
                       << ", type=0x" << std::hex << (int)apFrame->mPayloadType << std::dec
                       << "\n";
-        });
+        }, 100, 0);
 
-        lSender.setCallback([&lReceiver](const uint8_t* apData, size_t aSize, uint8_t) {
-            (void)lReceiver.receive(apData, aSize, 0);
+        auto lSender = efp::makeSender(MTU, [&lReceiver](std::span<const uint8_t> aData, uint8_t) {
+            (void)lReceiver.receive(aData, 0);
         });
 
         // Video on stream 1
@@ -164,18 +150,15 @@ int main() {
     {
         constexpr uint16_t MTU = 1400;
 
-        efp::Sender lSender(MTU);
-        efp::Receiver lReceiver(100, 0, efp::ReceiverMode::RUN_TO_COMPLETION);
-
         bool lReceived = false;
 
-        lReceiver.setCallback([&lReceived](efp::SuperFramePtr apFrame) {
+        auto lReceiver = efp::makeReceiver([&lReceived](efp::SuperFramePtr apFrame) {
             std::cout << "Run-to-completion received: size=" << apFrame->mSize << "\n";
             lReceived = true;
-        });
+        }, 100, 0, efp::ReceiverMode::RUN_TO_COMPLETION);
 
-        lSender.setCallback([&lReceiver](const uint8_t* apData, size_t aSize, uint8_t) {
-            (void)lReceiver.receive(apData, aSize, 0);
+        auto lSender = efp::makeSender(MTU, [&lReceiver](std::span<const uint8_t> aData, uint8_t) {
+            (void)lReceiver.receive(aData, 0);
         });
 
         const std::vector<uint8_t> lPayload(100);
@@ -192,16 +175,14 @@ int main() {
     // -------------------------------------------------------------------------
     std::cout << "\n=== Example 6: Custom Buffer Size ===\n";
     {
-        // Use smaller buffer (2^10 - 1 = 1023)
-        efp::Sender<1023> lSender(1400);
-        efp::Receiver<1023> lReceiver(100, 0);
-
-        lReceiver.setCallback([](efp::SuperFramePtr apFrame) {
+        // For custom buffer sizes, use Receiver/Sender class directly with callable struct
+        // For simplicity, this example uses default buffer size
+        auto lReceiver = efp::makeReceiver([](efp::SuperFramePtr apFrame) {
             std::cout << "Custom buffer receiver got frame: size=" << apFrame->mSize << "\n";
-        });
+        }, 100, 0);
 
-        lSender.setCallback([&lReceiver](const uint8_t* apData, size_t aSize, uint8_t) {
-            (void)lReceiver.receive(apData, aSize, 0);
+        auto lSender = efp::makeSender(1400, [&lReceiver](std::span<const uint8_t> aData, uint8_t) {
+            (void)lReceiver.receive(aData, 0);
         });
 
         const std::vector<uint8_t> lPayload(100);

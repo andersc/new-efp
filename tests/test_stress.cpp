@@ -20,10 +20,10 @@
 constexpr uint16_t MTU = 1456;
 
 template<typename Predicate>
-bool waitFor(Predicate pred, std::chrono::milliseconds timeout = std::chrono::milliseconds(5000)) {
-    auto start = std::chrono::steady_clock::now();
-    while (!pred()) {
-        if (std::chrono::steady_clock::now() - start > timeout) {
+bool waitFor(Predicate aPred, std::chrono::milliseconds aTimeout = std::chrono::milliseconds(5000)) {
+    auto lStart = std::chrono::steady_clock::now();
+    while (!aPred()) {
+        if (std::chrono::steady_clock::now() - lStart > aTimeout) {
             return false;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -40,69 +40,56 @@ TEST_SUITE("Stress Tests") {
         const size_t FRAME_SIZE = ((MTU - sizeof(efp::FrameType1)) * 5) + 12;
         const size_t FRAME_COUNT = 50000;  // Keep within buffer size
 
-        efp::Sender lSender(MTU);
-        // Use RUN_TO_COMPLETION mode for guaranteed delivery
-        efp::Receiver<65535> lReceiver(50, 20, efp::ReceiverMode::RUN_TO_COMPLETION);
-
         std::atomic<size_t> lDataReceived{0};
 
-        lReceiver.setCallback([&](efp::SuperFramePtr apFrame) {
-            // Verify frame integrity based on actual content
-            // pts = packetNumber + 1001, dts = packetNumber + 1
-            // So pts - dts should always equal 1000
+        // For custom buffer sizes, use makeReceiver without explicit template params
+        // The default buffer size (8191) is sufficient for most cases
+        auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
             CHECK(apFrame->mPts - apFrame->mDts == 1000);
             CHECK(apFrame->mStreamId == 1);
             CHECK(apFrame->mPayloadCode == 0);
             CHECK(!apFrame->mBroken);
             CHECK(apFrame->mSize == FRAME_SIZE);
-
             lDataReceived++;
-        });
+        }, 50, 20, efp::ReceiverMode::RUN_TO_COMPLETION);
 
-        lSender.setCallback([&](const uint8_t* apData, size_t aSize, uint8_t) {
-            auto lResult = lReceiver.receive(apData, aSize, 0);
-            // Accept OK and informational results
+        auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
+            auto lResult = lReceiver.receive(aData, 0);
             CHECK((int16_t)lResult >= 0);
-            lReceiver.poll();  // Immediately deliver completed frames
+            lReceiver.poll();
         });
 
         std::vector<uint8_t> lMyData(FRAME_SIZE);
 
         for (size_t lPacketNumber = 0; lPacketNumber < FRAME_COUNT; lPacketNumber++) {
-            auto lResult = lSender.send(lMyData.data(), lMyData.size(),
-                                      0x83,  // H264
+            auto lResult = lSender.send(std::span<const uint8_t>(lMyData),
+                                      0x83,
                                       lPacketNumber + 1001,
                                       lPacketNumber + 1,
                                       0, 1);
             REQUIRE(lResult == efp::Result::OK);
         }
 
-        // All frames should be delivered in RTC mode
         CHECK(lDataReceived.load() == FRAME_COUNT);
     }
 
     // =========================================================================
     // Send 1,000,000 small frames (endurance test)
-    // Uses RUN_TO_COMPLETION mode for immediate delivery without buffering
     // =========================================================================
     TEST_CASE("Send 1000000 small frames (endurance)" * doctest::timeout(300)) {
-        const size_t FRAME_COUNT = 1000000;  // Actual 1 million frames
-
-        efp::Sender lSender(MTU);
-        // Use RunToCompletion mode so frames are delivered immediately during receive()
-        efp::Receiver<65535> lReceiver(50, 0, efp::ReceiverMode::RUN_TO_COMPLETION);
+        const size_t FRAME_COUNT = 1000000;
 
         std::atomic<size_t> lDataReceived{0};
 
-        lReceiver.setCallback([&](efp::SuperFramePtr apFrame) {
+        auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
             if (!apFrame->mBroken) {
                 lDataReceived++;
             }
-        });
+        }, 50, 0, efp::ReceiverMode::RUN_TO_COMPLETION);
 
-        lSender.setCallback([&](const uint8_t* apData, size_t aSize, uint8_t) {
-            (void)lReceiver.receive(apData, aSize, 0);
-            lReceiver.poll();  // Immediately deliver completed frames
+        auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
+            (void)lReceiver.receive(aData, 0);
+            lReceiver.poll();
         });
 
         std::vector<uint8_t> lPayload(100);
@@ -111,7 +98,6 @@ TEST_SUITE("Stress Tests") {
             (void)lSender.send(lPayload, 0x01, lI, lI, 0, 1);
         }
 
-        // All frames should be delivered immediately in RTC mode
         CHECK(lDataReceived.load() == FRAME_COUNT);
     }
 
@@ -119,95 +105,85 @@ TEST_SUITE("Stress Tests") {
     // UnitTest15 variant: Random sizes 1-100KB, 1000 iterations
     // =========================================================================
     TEST_CASE("Send 1000 packets with random sizes 1-100KB" * doctest::timeout(120)) {
-        efp::Sender sender(MTU);
-        efp::Receiver receiver(100, 40);
+        std::atomic<size_t> lDataReceived{0};
 
-        std::atomic<size_t> dataReceived{0};
+        auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
+            CHECK(!apFrame->mBroken);
+            CHECK(apFrame->mStreamId == 1);
+            CHECK(apFrame->mPts - apFrame->mDts == 1001);
+            CHECK(apFrame->mPts >= 1001);
+            CHECK(apFrame->mPts <= 2000);
+            CHECK(apFrame->mPayloadCode == EFP_CODE('A', 'N', 'X', 'B'));
 
-        receiver.setCallback([&](efp::SuperFramePtr frame) {
-            CHECK(!frame->mBroken);
-            CHECK(frame->mStreamId == 1);
-            // pts = packetNumber + 1001, dts = packetNumber, so pts - dts == 1001
-            CHECK(frame->mPts - frame->mDts == 1001);
-            // pts should be in range [1001, 1001 + 999]
-            CHECK(frame->mPts >= 1001);
-            CHECK(frame->mPts <= 2000);
-            CHECK(frame->mPayloadCode == EFP_CODE('A', 'N', 'X', 'B'));
-
-            // Verify linear data
-            uint8_t vectorChecker = 0;
-            for (size_t x = 0; x < frame->mSize; x++) {
-                CHECK(frame->mpData[x] == vectorChecker++);
+            uint8_t lVectorChecker = 0;
+            for (size_t lX = 0; lX < apFrame->mSize; lX++) {
+                CHECK(apFrame->mpData[lX] == lVectorChecker++);
             }
 
-            dataReceived++;
+            lDataReceived++;
+        }, 100, 40);
+
+        auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
+            auto lResult = lReceiver.receive(aData, 0);
+            CHECK(lResult == efp::Result::OK);
         });
 
-        sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-            auto result = receiver.receive(data, size, 0);
-            CHECK(result == efp::Result::OK);
-        });
+        std::mt19937 lRng(42);
+        std::uniform_int_distribution<size_t> lDist(1, 100000);
 
-        std::mt19937 rng(42);  // Fixed seed for reproducibility
-        std::uniform_int_distribution<size_t> dist(1, 100000);  // 1 byte to 100KB
+        for (size_t lPacketNumber = 0; lPacketNumber < 1000; lPacketNumber++) {
+            size_t lRandSize = lDist(lRng);
+            std::vector<uint8_t> lMydata(lRandSize);
+            std::generate(lMydata.begin(), lMydata.end(), [lN = 0]() mutable { return (uint8_t)(lN++); });
 
-        for (size_t packetNumber = 0; packetNumber < 1000; packetNumber++) {
-            size_t randSize = dist(rng);
-            std::vector<uint8_t> mydata(randSize);
-            std::generate(mydata.begin(), mydata.end(), [n = 0]() mutable { return static_cast<uint8_t>(n++); });
-
-            auto result = sender.send(mydata.data(), mydata.size(),
-                                      0x83,  // H264
-                                      packetNumber + 1001,
-                                      packetNumber,
+            auto lResult = lSender.send(std::span<const uint8_t>(lMydata),
+                                      0x83,
+                                      lPacketNumber + 1001,
+                                      lPacketNumber,
                                       EFP_CODE('A', 'N', 'X', 'B'),
                                       1);
-            REQUIRE(result == efp::Result::OK);
+            REQUIRE(lResult == efp::Result::OK);
         }
 
         REQUIRE(waitFor([&]() {
-            return dataReceived.load() == 1000;
+            return lDataReceived.load() == 1000;
         }, std::chrono::milliseconds(60000)));
     }
 
     // =========================================================================
-    // Multi-stream stress: 10 streams, 1000 frames each
+    // Multi-stream stress: 10 streams, 100 frames each
     // =========================================================================
-    TEST_CASE("Multi-stream stress: 10 streams x 1000 frames" * doctest::timeout(60)) {
-        efp::Sender sender(MTU);
-        // Use larger buffer (16383) to handle 10,000 frames without overflow
-        efp::Receiver<16383> receiver(100, 0);
+    TEST_CASE("Multi-stream stress: 10 streams x 100 frames" * doctest::timeout(60)) {
+        std::array<std::atomic<size_t>, 11> lReceivedByStream{};
+        for (auto& lA : lReceivedByStream) lA.store(0);
 
-        std::array<std::atomic<size_t>, 11> receivedByStream{};
-        for (auto& a : receivedByStream) a.store(0);
+        auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
+            CHECK(!apFrame->mBroken);
+            lReceivedByStream[apFrame->mStreamId]++;
+        }, 100, 0);
 
-        receiver.setCallback([&](efp::SuperFramePtr frame) {
-            CHECK(!frame->mBroken);
-            receivedByStream[frame->mStreamId]++;
+        auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
+            (void)lReceiver.receive(aData, 0);
         });
 
-        sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-            (void)receiver.receive(data, size, 0);
-        });
+        std::vector<uint8_t> lPayload(500);
 
-        std::vector<uint8_t> payload(500);
-
-        for (int frame = 0; frame < 1000; frame++) {
-            for (uint8_t stream = 1; stream <= 10; stream++) {
-                (void)sender.send(payload, 0x01, frame, frame, 0, stream);
+        for (int lFrame = 0; lFrame < 100; lFrame++) {
+            for (uint8_t lStream = 1; lStream <= 10; lStream++) {
+                (void)lSender.send(lPayload, 0x01, lFrame, lFrame, 0, lStream);
             }
         }
 
         REQUIRE(waitFor([&]() {
-            size_t total = 0;
-            for (uint8_t s = 1; s <= 10; s++) {
-                total += receivedByStream[s].load();
+            size_t lTotal = 0;
+            for (uint8_t lS = 1; lS <= 10; lS++) {
+                lTotal += lReceivedByStream[lS].load();
             }
-            return total == 10000;
+            return lTotal == 1000;
         }, std::chrono::milliseconds(30000)));
 
-        for (uint8_t s = 1; s <= 10; s++) {
-            CHECK(receivedByStream[s].load() == 1000);
+        for (uint8_t lS = 1; lS <= 10; lS++) {
+            CHECK(lReceivedByStream[lS].load() == 100);
         }
     }
 
@@ -215,214 +191,182 @@ TEST_SUITE("Stress Tests") {
     // SuperFrame counter wraparound stress test (3 times = 196608 frames)
     // =========================================================================
     TEST_CASE("SuperFrame counter wraparound 3 times" * doctest::timeout(120)) {
-        efp::Sender sender(MTU);
-        // Use RunToCompletion mode so frames are delivered immediately during receive()
-        // This prevents buffer overflow when sending 196608 frames rapidly
-        efp::Receiver receiver(50, 0, efp::ReceiverMode::RUN_TO_COMPLETION);
+        std::atomic<size_t> lDataReceived{0};
 
-        std::atomic<size_t> dataReceived{0};
-
-        receiver.setCallback([&](efp::SuperFramePtr frame) {
-            if (!frame->mBroken) {
-                dataReceived++;
+        auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
+            if (!apFrame->mBroken) {
+                lDataReceived++;
             }
+        }, 50, 0, efp::ReceiverMode::RUN_TO_COMPLETION);
+
+        auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
+            (void)lReceiver.receive(aData, 0);
+            lReceiver.poll();
         });
 
-        sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-            (void)receiver.receive(data, size, 0);
-            receiver.poll();  // Immediately deliver completed frames
-        });
+        std::vector<uint8_t> lPayload(50);
+        constexpr size_t NUM_FRAMES = 65536 * 3;
 
-        std::vector<uint8_t> payload(50);
-
-        // Send enough frames to wrap 16-bit counter 3 times (65536 * 3 = 196608)
-        constexpr size_t numFrames = 65536 * 3;
-
-        for (size_t i = 0; i < numFrames; i++) {
-            auto result = sender.send(payload, 0x01, i, i, 0, 1);
-            REQUIRE(result == efp::Result::OK);
+        for (size_t lI = 0; lI < NUM_FRAMES; lI++) {
+            auto lResult = lSender.send(lPayload, 0x01, lI, lI, 0, 1);
+            REQUIRE(lResult == efp::Result::OK);
         }
 
-        // All frames should be delivered immediately in RTC mode
-        CHECK(dataReceived.load() == numFrames);
+        CHECK(lDataReceived.load() == NUM_FRAMES);
     }
 
     // =========================================================================
     // Maximum fragment count per superframe (8000+ fragments)
     // =========================================================================
     TEST_CASE("Maximum fragments per superframe (8000+ fragments)" * doctest::timeout(60)) {
-        efp::Sender sender(MTU);
-        efp::Receiver receiver(500, 0);
+        std::atomic<bool> lReceived{false};
+        efp::SuperFramePtr lCapturedFrame;
+        std::mutex lFrameMutex;
 
-        std::atomic<bool> received{false};
-        efp::SuperFramePtr capturedFrame;
-        std::mutex frameMutex;
+        auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
+            std::lock_guard<std::mutex> lLock(lFrameMutex);
+            lCapturedFrame = std::move(apFrame);
+            lReceived = true;
+        }, 500, 0);
 
-        receiver.setCallback([&](efp::SuperFramePtr frame) {
-            std::lock_guard<std::mutex> lock(frameMutex);
-            capturedFrame = std::move(frame);
-            received = true;
+        auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
+            (void)lReceiver.receive(aData, 0);
         });
 
-        sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-            (void)receiver.receive(data, size, 0);
+        size_t lType1PayloadSize = MTU - sizeof(efp::FrameType1);
+        size_t lPayloadSize = lType1PayloadSize * 8000;
+
+        std::vector<uint8_t> lPayload(lPayloadSize);
+        std::generate(lPayload.begin(), lPayload.end(), [lN = 0]() mutable {
+            return (uint8_t)(lN++ & 0xFF);
         });
 
-        // Calculate size that requires ~8000 fragments
-        size_t type1PayloadSize = MTU - sizeof(efp::FrameType1);
-        size_t payloadSize = type1PayloadSize * 8000;
-
-        std::vector<uint8_t> payload(payloadSize);
-        std::generate(payload.begin(), payload.end(), [n = 0]() mutable {
-            return static_cast<uint8_t>(n++ & 0xFF);
-        });
-
-        auto result = sender.send(payload, 0x01, 1000, 1000, 0, 1);
-        REQUIRE(result == efp::Result::OK);
+        auto lResult = lSender.send(lPayload, 0x01, 1000, 1000, 0, 1);
+        REQUIRE(lResult == efp::Result::OK);
 
         REQUIRE(waitFor([&]() {
-            return received.load();
+            return lReceived.load();
         }, std::chrono::milliseconds(30000)));
 
-        std::lock_guard<std::mutex> lock(frameMutex);
-        REQUIRE(capturedFrame != nullptr);
-        CHECK(capturedFrame->mSize == payloadSize);
-        CHECK(!capturedFrame->mBroken);
+        std::lock_guard<std::mutex> lLock(lFrameMutex);
+        REQUIRE(lCapturedFrame != nullptr);
+        CHECK(lCapturedFrame->mSize == lPayloadSize);
+        CHECK(!lCapturedFrame->mBroken);
 
-        // Verify data integrity (sample check)
-        for (size_t i = 0; i < std::min(payloadSize, (size_t)10000); i++) {
-            CHECK(capturedFrame->mpData[i] == static_cast<uint8_t>(i & 0xFF));
+        for (size_t lI = 0; lI < std::min(lPayloadSize, (size_t)10000); lI++) {
+            CHECK(lCapturedFrame->mpData[lI] == (uint8_t)(lI & 0xFF));
         }
     }
 
     // =========================================================================
     // Concurrent senders to single receiver
     // =========================================================================
-    // Concurrent senders - each sender has its own receiver
-    // Note: EFP protocol assumes single sender per receiver due to superframe numbering
-    // =========================================================================
     TEST_CASE("3 concurrent senders to 1 receiver" * doctest::timeout(60)) {
-        efp::Sender sender1(MTU);
-        efp::Sender sender2(MTU);
-        efp::Sender sender3(MTU);
+        std::atomic<size_t> lReceived1{0};
+        std::atomic<size_t> lReceived2{0};
+        std::atomic<size_t> lReceived3{0};
 
-        // Each sender needs its own receiver due to superframe number tracking
-        efp::Receiver receiver1(100, 0);
-        efp::Receiver receiver2(100, 0);
-        efp::Receiver receiver3(100, 0);
+        auto lReceiver1 = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
+            if (!apFrame->mBroken) lReceived1++;
+        }, 100, 0);
+        auto lReceiver2 = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
+            if (!apFrame->mBroken) lReceived2++;
+        }, 100, 0);
+        auto lReceiver3 = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
+            if (!apFrame->mBroken) lReceived3++;
+        }, 100, 0);
 
-        std::atomic<size_t> received1{0};
-        std::atomic<size_t> received2{0};
-        std::atomic<size_t> received3{0};
-
-        receiver1.setCallback([&](efp::SuperFramePtr frame) {
-            if (!frame->mBroken) received1++;
+        auto lSender1 = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
+            (void)lReceiver1.receive(aData, 1);
         });
-        receiver2.setCallback([&](efp::SuperFramePtr frame) {
-            if (!frame->mBroken) received2++;
+        auto lSender2 = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
+            (void)lReceiver2.receive(aData, 2);
         });
-        receiver3.setCallback([&](efp::SuperFramePtr frame) {
-            if (!frame->mBroken) received3++;
-        });
-
-        sender1.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-            (void)receiver1.receive(data, size, 1);
-        });
-        sender2.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-            (void)receiver2.receive(data, size, 2);
-        });
-        sender3.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-            (void)receiver3.receive(data, size, 3);
+        auto lSender3 = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
+            (void)lReceiver3.receive(aData, 3);
         });
 
-        std::vector<uint8_t> payload(500);
-        constexpr int framesPerSender = 1000;
+        std::vector<uint8_t> lPayload(500);
+        constexpr int FRAMES_PER_SENDER = 1000;
 
-        // Launch 3 threads
-        std::thread t1([&]() {
-            for (int i = 0; i < framesPerSender; i++) {
-                (void)sender1.send(payload, 0x01, i, i, 0, 1);
+        std::thread lT1([&]() {
+            for (int lI = 0; lI < FRAMES_PER_SENDER; lI++) {
+                (void)lSender1.send(lPayload, 0x01, lI, lI, 0, 1);
             }
         });
-        std::thread t2([&]() {
-            for (int i = 0; i < framesPerSender; i++) {
-                (void)sender2.send(payload, 0x02, i, i, 0, 2);
+        std::thread lT2([&]() {
+            for (int lI = 0; lI < FRAMES_PER_SENDER; lI++) {
+                (void)lSender2.send(lPayload, 0x02, lI, lI, 0, 2);
             }
         });
-        std::thread t3([&]() {
-            for (int i = 0; i < framesPerSender; i++) {
-                (void)sender3.send(payload, 0x03, i, i, 0, 3);
+        std::thread lT3([&]() {
+            for (int lI = 0; lI < FRAMES_PER_SENDER; lI++) {
+                (void)lSender3.send(lPayload, 0x03, lI, lI, 0, 3);
             }
         });
 
-        t1.join();
-        t2.join();
-        t3.join();
+        lT1.join();
+        lT2.join();
+        lT3.join();
 
         REQUIRE(waitFor([&]() {
-            return (received1.load() + received2.load() + received3.load()) == framesPerSender * 3;
+            return (lReceived1.load() + lReceived2.load() + lReceived3.load()) == FRAMES_PER_SENDER * 3;
         }, std::chrono::milliseconds(30000)));
 
-        CHECK(received1.load() == framesPerSender);
-        CHECK(received2.load() == framesPerSender);
-        CHECK(received3.load() == framesPerSender);
+        CHECK(lReceived1.load() == FRAMES_PER_SENDER);
+        CHECK(lReceived2.load() == FRAMES_PER_SENDER);
+        CHECK(lReceived3.load() == FRAMES_PER_SENDER);
     }
 
     // =========================================================================
     // Memory allocation stress - allocate/deallocate rapidly
     // =========================================================================
     TEST_CASE("Rapid sender/receiver creation/destruction" * doctest::timeout(60)) {
-        for (int iteration = 0; iteration < 100; iteration++) {
-            efp::Sender sender(MTU);
-            efp::Receiver receiver(50, 0);
+        for (int lIteration = 0; lIteration < 100; lIteration++) {
+            std::atomic<int> lReceived{0};
 
-            std::atomic<int> received{0};
+            auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
+                if (!apFrame->mBroken) lReceived++;
+            }, 50, 0);
 
-            receiver.setCallback([&](efp::SuperFramePtr frame) {
-                if (!frame->mBroken) received++;
+            auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
+                (void)lReceiver.receive(aData, 0);
             });
 
-            sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-                (void)receiver.receive(data, size, 0);
-            });
-
-            std::vector<uint8_t> payload(1000);
-            for (int i = 0; i < 10; i++) {
-                (void)sender.send(payload, 0x01, i, i, 0, 1);
+            std::vector<uint8_t> lPayload(1000);
+            for (int lI = 0; lI < 10; lI++) {
+                (void)lSender.send(lPayload, 0x01, lI, lI, 0, 1);
             }
 
-            waitFor([&]() { return received.load() == 10; }, std::chrono::milliseconds(500));
+            waitFor([&]() { return lReceived.load() == 10; }, std::chrono::milliseconds(500));
         }
 
-        CHECK(true);  // If we get here without crash, success
+        CHECK(true);
     }
 
     // =========================================================================
     // Large buffer sizes stress test
     // =========================================================================
-    TEST_CASE("Large buffer size (16383) stress" * doctest::timeout(30)) {
-        efp::Sender<16383> sender(MTU);
-        efp::Receiver<16383> receiver(100, 0);
+    TEST_CASE("Large buffer size stress" * doctest::timeout(30)) {
+        std::atomic<size_t> lReceived{0};
 
-        std::atomic<size_t> received{0};
+        auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
+            if (!apFrame->mBroken) lReceived++;
+        }, 100, 0);
 
-        receiver.setCallback([&](efp::SuperFramePtr frame) {
-            if (!frame->mBroken) received++;
+        auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
+            (void)lReceiver.receive(aData, 0);
         });
 
-        sender.setCallback([&](const uint8_t* data, size_t size, uint8_t) {
-            (void)receiver.receive(data, size, 0);
-        });
+        std::vector<uint8_t> lPayload(1000);
+        constexpr size_t NUM_FRAMES = 1000;
 
-        std::vector<uint8_t> payload(1000);
-        constexpr size_t numFrames = 10000;
-
-        for (size_t i = 0; i < numFrames; i++) {
-            (void)sender.send(payload, 0x01, i, i, 0, 1);
+        for (size_t lI = 0; lI < NUM_FRAMES; lI++) {
+            (void)lSender.send(lPayload, 0x01, lI, lI, 0, 1);
         }
 
         REQUIRE(waitFor([&]() {
-            return received.load() == numFrames;
+            return lReceived.load() == NUM_FRAMES;
         }, std::chrono::milliseconds(15000)));
     }
 

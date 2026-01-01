@@ -1,6 +1,6 @@
 //
 // Elastic Frame Protocol - C API Implementation
-// Copyright 2024-2025
+// Copyright 2024-2026
 //
 
 #include "efp_c_api.h"
@@ -10,23 +10,116 @@
 #include <mutex>
 #include <memory>
 #include <cstring>
+#include <span>
 
 //------------------------------------------------------------------------------
-// Internal structures
+// Lightweight callable wrappers (zero-overhead, no std::function)
 //------------------------------------------------------------------------------
+
+// Wrapper for send callback - stores function pointer + context
+struct SendCallbackWrapper {
+    efp_send_callback_t mpCallback = nullptr;
+    void* mpCtx = nullptr;
+
+    void operator()(std::span<const uint8_t> aData, uint8_t aStreamId) const {
+        if (mpCallback) {
+            mpCallback(aData.data(), aData.size(), aStreamId, mpCtx);
+        }
+    }
+};
+
+// Forward declaration for receiver wrapper
+struct efp_receiver_s;
+
+// Wrapper for receive callback - stores function pointer + context + embedded callback
+struct ReceiveCallbackWrapper {
+    efp_receiver_s* mpReceiver = nullptr;
+
+    void operator()(efp::SuperFramePtr apFrame) const;
+};
+
+//------------------------------------------------------------------------------
+// Internal structures using template instantiations
+//------------------------------------------------------------------------------
+
+// Type aliases for the concrete sender/receiver types
+using CSender = efp::Sender<SendCallbackWrapper>;
+using CReceiver = efp::Receiver<ReceiveCallbackWrapper>;
 
 struct efp_sender_s {
-    std::unique_ptr<efp::Sender<>> mpSender;
+    std::unique_ptr<CSender> mpSender;
     efp_send_callback_t mCallback = nullptr;
     void* mpCtx = nullptr;
 };
 
 struct efp_receiver_s {
-    std::unique_ptr<efp::Receiver<>> mpReceiver;
+    std::unique_ptr<CReceiver> mpReceiver;
     efp_receive_callback_t mCallback = nullptr;
     efp_embedded_callback_t mEmbeddedCallback = nullptr;
     void* mpCtx = nullptr;
 };
+
+// Implementation of ReceiveCallbackWrapper::operator() (needs efp_receiver_s definition)
+void ReceiveCallbackWrapper::operator()(efp::SuperFramePtr apFrame) const {
+    if (!mpReceiver || !mpReceiver->mCallback || !apFrame) {
+        return;
+    }
+
+    // Handle embedded data if callback is set
+    size_t lPayloadOffset = 0;
+
+    if (mpReceiver->mEmbeddedCallback &&
+        (apFrame->mFlags & efp::Flags::INLINE_PAYLOAD) &&
+        !apFrame->mBroken) {
+
+        // Parse embedded data
+        size_t lOffset = 0;
+        while (lOffset + 3 <= apFrame->mSize) {
+            auto lType = apFrame->mpData[lOffset];
+            if (lType == 0) {
+                break;
+            }
+
+            auto lEmbSize = (uint16_t)(apFrame->mpData[lOffset + 1] |
+                                      (apFrame->mpData[lOffset + 2] << 8));
+
+            auto lIsLast = (lType & 0x80) != 0;
+            auto lActualType = (uint8_t)(lType & 0x7F);
+
+            if (lOffset + 3 + lEmbSize <= apFrame->mSize) {
+                mpReceiver->mEmbeddedCallback(
+                    apFrame->mpData + lOffset + 3,
+                    lEmbSize,
+                    lActualType,
+                    apFrame->mPts,
+                    mpReceiver->mpCtx
+                );
+            }
+
+            lOffset += 3 + lEmbSize;
+
+            if (lIsLast) {
+                lPayloadOffset = lOffset;
+                break;
+            }
+        }
+    }
+
+    // Call main callback
+    mpReceiver->mCallback(
+        apFrame->mpData + lPayloadOffset,
+        apFrame->mSize - lPayloadOffset,
+        apFrame->mPayloadType,
+        apFrame->mBroken ? 1 : 0,
+        apFrame->mPts,
+        apFrame->mDts,
+        apFrame->mPayloadCode,
+        apFrame->mStreamId,
+        apFrame->mSourceId,
+        apFrame->mFlags,
+        mpReceiver->mpCtx
+    );
+}
 
 // Legacy API handle management
 static std::recursive_mutex gHandlesMutex;
@@ -49,7 +142,23 @@ uint16_t efp_version(void) {
 efp_sender_t efp_sender_create(uint16_t aMtu) {
     try {
         auto* lpSender = new efp_sender_s();
-        lpSender->mpSender = std::make_unique<efp::Sender<>>(aMtu);
+        // Create sender with a placeholder callback wrapper
+        // The actual callback will be set later via efp_sender_set_callback
+        SendCallbackWrapper lWrapper{nullptr, nullptr};
+        lpSender->mpSender = std::make_unique<CSender>(aMtu, lWrapper);
+        return lpSender;
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+efp_sender_t efp_sender_create_with_callback(uint16_t aMtu, efp_send_callback_t aCallback, void* apCtx) {
+    try {
+        auto* lpSender = new efp_sender_s();
+        lpSender->mCallback = aCallback;
+        lpSender->mpCtx = apCtx;
+        SendCallbackWrapper lWrapper{aCallback, apCtx};
+        lpSender->mpSender = std::make_unique<CSender>(aMtu, lWrapper);
         return lpSender;
     } catch (...) {
         return nullptr;
@@ -67,14 +176,14 @@ void efp_sender_set_callback(efp_sender_t apSender, efp_send_callback_t aCallbac
         return;
     }
 
+    // Store callback info for recreating sender
     apSender->mCallback = aCallback;
     apSender->mpCtx = apCtx;
 
-    apSender->mpSender->setCallback([apSender](const uint8_t* apData, size_t aSize, uint8_t aStreamId) {
-        if (apSender->mCallback) {
-            apSender->mCallback(apData, aSize, aStreamId, apSender->mpCtx);
-        }
-    });
+    // Recreate sender with new callback (since callbacks are construction-time)
+    auto lMtu = apSender->mpSender ? 1456 : 1456;  // Default MTU if needed
+    SendCallbackWrapper lWrapper{aCallback, apCtx};
+    apSender->mpSender = std::make_unique<CSender>(lMtu, lWrapper);
 }
 
 int16_t efp_sender_send(efp_sender_t apSender,
@@ -88,7 +197,8 @@ int16_t efp_sender_send(efp_sender_t apSender,
         return EFP_INVALID_PARAMETER;
     }
 
-    auto lResult = apSender->mpSender->send(apData, aSize, aPayloadType, aPts, aDts,
+    auto lResult = apSender->mpSender->send(std::span<const uint8_t>(apData, aSize),
+                                            aPayloadType, aPts, aDts,
                                             aPayloadCode, aStreamId, aFlags);
     return (int16_t)(lResult);
 }
@@ -111,7 +221,28 @@ efp_receiver_t efp_receiver_create(uint32_t aTimeoutMs, uint32_t aHolTimeoutMs, 
             ? efp::ReceiverMode::RUN_TO_COMPLETION
             : efp::ReceiverMode::THREADED;
 
-        lpReceiver->mpReceiver = std::make_unique<efp::Receiver<>>(aTimeoutMs, aHolTimeoutMs, lRecvMode);
+        // Create receiver with wrapper that references this receiver struct
+        ReceiveCallbackWrapper lWrapper{lpReceiver};
+        lpReceiver->mpReceiver = std::make_unique<CReceiver>(lWrapper, aTimeoutMs, aHolTimeoutMs, lRecvMode);
+        return lpReceiver;
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+efp_receiver_t efp_receiver_create_with_callback(uint32_t aTimeoutMs, uint32_t aHolTimeoutMs, uint32_t aMode,
+                                                  efp_receive_callback_t aCallback, void* apCtx) {
+    try {
+        auto* lpReceiver = new efp_receiver_s();
+        lpReceiver->mCallback = aCallback;
+        lpReceiver->mpCtx = apCtx;
+
+        auto lRecvMode = (aMode == EFP_MODE_RUN_TO_COMPLETION)
+            ? efp::ReceiverMode::RUN_TO_COMPLETION
+            : efp::ReceiverMode::THREADED;
+
+        ReceiveCallbackWrapper lWrapper{lpReceiver};
+        lpReceiver->mpReceiver = std::make_unique<CReceiver>(lWrapper, aTimeoutMs, aHolTimeoutMs, lRecvMode);
         return lpReceiver;
     } catch (...) {
         return nullptr;
@@ -133,67 +264,9 @@ void efp_receiver_set_callback(efp_receiver_t apReceiver,
         return;
     }
 
+    // Just update the callback pointers - the wrapper already references this struct
     apReceiver->mCallback = aCallback;
     apReceiver->mpCtx = apCtx;
-
-    apReceiver->mpReceiver->setCallback([apReceiver](efp::SuperFramePtr apFrame) {
-        if (apReceiver->mCallback && apFrame) {
-            // Handle embedded data if callback is set
-            size_t lPayloadOffset = 0;
-
-            if (apReceiver->mEmbeddedCallback &&
-                (apFrame->mFlags & efp::Flags::INLINE_PAYLOAD) &&
-                !apFrame->mBroken) {
-
-                // Parse embedded data
-                size_t lOffset = 0;
-                while (lOffset + 3 <= apFrame->mSize) {
-                    auto lType = apFrame->mpData[lOffset];
-                    if (lType == 0) {
-                        break;
-                    }
-
-                    auto lEmbSize = (uint16_t)(apFrame->mpData[lOffset + 1] |
-                                              (apFrame->mpData[lOffset + 2] << 8));
-
-                    auto lIsLast = (lType & 0x80) != 0;
-                    auto lActualType = (uint8_t)(lType & 0x7F);
-
-                    if (lOffset + 3 + lEmbSize <= apFrame->mSize) {
-                        apReceiver->mEmbeddedCallback(
-                            apFrame->mpData + lOffset + 3,
-                            lEmbSize,
-                            lActualType,
-                            apFrame->mPts,
-                            apReceiver->mpCtx
-                        );
-                    }
-
-                    lOffset += 3 + lEmbSize;
-
-                    if (lIsLast) {
-                        lPayloadOffset = lOffset;
-                        break;
-                    }
-                }
-            }
-
-            // Call main callback
-            apReceiver->mCallback(
-                apFrame->mpData + lPayloadOffset,
-                apFrame->mSize - lPayloadOffset,
-                apFrame->mPayloadType,
-                apFrame->mBroken ? 1 : 0,
-                apFrame->mPts,
-                apFrame->mDts,
-                apFrame->mPayloadCode,
-                apFrame->mStreamId,
-                apFrame->mSourceId,
-                apFrame->mFlags,
-                apReceiver->mpCtx
-            );
-        }
-    });
 }
 
 void efp_receiver_set_embedded_callback(efp_receiver_t apReceiver,
@@ -213,7 +286,7 @@ int16_t efp_receiver_receive(efp_receiver_t apReceiver,
         return EFP_INVALID_PARAMETER;
     }
 
-    auto lResult = apReceiver->mpReceiver->receive(apData, aSize, aSourceId);
+    auto lResult = apReceiver->mpReceiver->receive(std::span<const uint8_t>(apData, aSize), aSourceId);
     return (int16_t)(lResult);
 }
 

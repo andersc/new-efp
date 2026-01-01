@@ -38,10 +38,8 @@ TEST_SUITE("Basic Functionality") {
     // UnitTest1: Small packet results in Type2 frame only
     // =========================================================================
     TEST_CASE("Small packet Type2 only (UnitTest1)") {
-        efp::Sender lSender(MTU);
-
-        lSender.setCallback([](const uint8_t* apData, size_t, uint8_t) {
-            CHECK((apData[0] & 0x0f) == (uint8_t)(efp::FrameType::TYPE2));
+        auto lSender = efp::makeSender(MTU, [](std::span<const uint8_t> aData, uint8_t) {
+            CHECK((aData[0] & 0x0f) == (uint8_t)(efp::FrameType::TYPE2));
         });
 
         std::vector<uint8_t> lMyData(MTU - sizeof(efp::FrameType2));
@@ -56,26 +54,23 @@ TEST_SUITE("Basic Functionality") {
     TEST_CASE("Type2 frame roundtrip (UnitTest2)") {
         const size_t FRAME_SIZE = MTU - sizeof(efp::FrameType2);
 
-        efp::Sender lSender(MTU);
-        efp::Receiver lReceiver(50, 20);
-
         std::atomic<bool> lDataReceived{false};
-
         size_t lDataSent = 0;
-        lSender.setCallback([&](const uint8_t* apData, size_t aSize, uint8_t) {
-            auto lResult = lReceiver.receive(apData, aSize, 0);
-            CHECK(lResult == efp::Result::OK);
-            lDataSent++;
-            CHECK(lDataSent <= 1);  // Should only be one fragment
-        });
 
-        lReceiver.setCallback([&](efp::SuperFramePtr apFrame) {
+        auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
             CHECK(apFrame->mPts == 1001);
             CHECK(apFrame->mPayloadCode == 2);
             CHECK(!apFrame->mBroken);
             CHECK(apFrame->mPayloadType == 0x02);
             CHECK(apFrame->mSize == FRAME_SIZE);
             lDataReceived = true;
+        }, 50, 20);
+
+        auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
+            auto lResult = lReceiver.receive(aData, 0);
+            CHECK(lResult == efp::Result::OK);
+            lDataSent++;
+            CHECK(lDataSent <= 1);  // Should only be one fragment
         });
 
         std::vector<uint8_t> lMyData(FRAME_SIZE);
@@ -92,17 +87,9 @@ TEST_SUITE("Basic Functionality") {
     TEST_CASE("Single byte payload (UnitTest3)") {
         const size_t FRAME_SIZE = 1;
 
-        efp::Sender lSender(MTU);
-        efp::Receiver lReceiver(50, 20);
-
         std::atomic<bool> lDataReceived{false};
 
-        lSender.setCallback([&](const uint8_t* apData, size_t aSize, uint8_t) {
-            auto lResult = lReceiver.receive(apData, aSize, 0);
-            CHECK(lResult == efp::Result::OK);
-        });
-
-        lReceiver.setCallback([&](efp::SuperFramePtr apFrame) {
+        auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
             CHECK(apFrame->mPts == 1001);
             CHECK(apFrame->mPayloadCode == 2);
             CHECK(!apFrame->mBroken);
@@ -110,6 +97,11 @@ TEST_SUITE("Basic Functionality") {
             CHECK(apFrame->mSize == FRAME_SIZE);
             CHECK(apFrame->mpData[0] == 0xaa);
             lDataReceived = true;
+        }, 50, 20);
+
+        auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
+            auto lResult = lReceiver.receive(aData, 0);
+            CHECK(lResult == efp::Result::OK);
         });
 
         std::vector<uint8_t> lMyData(FRAME_SIZE);
@@ -127,36 +119,33 @@ TEST_SUITE("Basic Functionality") {
     TEST_CASE("Type1 and Type2 combined (UnitTest4)") {
         const size_t FRAME_SIZE = (MTU - sizeof(efp::FrameType1)) + 1;
 
-        efp::Sender lSender(MTU);
-        efp::Receiver lReceiver(50, 20);
-
         std::atomic<bool> lDataReceived{false};
-
         size_t lPacketNumber = 0;
-        lSender.setCallback([&](const uint8_t* apData, size_t aSize, uint8_t) {
-            if (lPacketNumber == 0) {
-                // First should be Type1
-                CHECK((apData[0] & 0x0f) == (uint8_t)(efp::FrameType::TYPE1));
-                CHECK(aSize == MTU);
-            } else if (lPacketNumber == 1) {
-                // Second should be Type2
-                CHECK((apData[0] & 0x0f) == (uint8_t)(efp::FrameType::TYPE2));
-                CHECK(aSize == sizeof(efp::FrameType2) + 1);
-            }
-            CHECK(lPacketNumber < 2);
-            lPacketNumber++;
 
-            auto lResult = lReceiver.receive(apData, aSize, 0);
-            CHECK(lResult == efp::Result::OK);
-        });
-
-        lReceiver.setCallback([&](efp::SuperFramePtr apFrame) {
+        auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
             CHECK(apFrame->mStreamId == 4);
             CHECK(apFrame->mPts == 1001);
             CHECK(apFrame->mPayloadCode == 2);
             CHECK(!apFrame->mBroken);
             CHECK(apFrame->mSize == FRAME_SIZE);
             lDataReceived = true;
+        }, 50, 20);
+
+        auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
+            if (lPacketNumber == 0) {
+                // First should be Type1
+                CHECK((aData[0] & 0x0f) == (uint8_t)(efp::FrameType::TYPE1));
+                CHECK(aData.size() == MTU);
+            } else if (lPacketNumber == 1) {
+                // Second should be Type2
+                CHECK((aData[0] & 0x0f) == (uint8_t)(efp::FrameType::TYPE2));
+                CHECK(aData.size() == sizeof(efp::FrameType2) + 1);
+            }
+            CHECK(lPacketNumber < 2);
+            lPacketNumber++;
+
+            auto lResult = lReceiver.receive(aData, 0);
+            CHECK(lResult == efp::Result::OK);
         });
 
         std::vector<uint8_t> lMyData(FRAME_SIZE);
@@ -173,17 +162,9 @@ TEST_SUITE("Basic Functionality") {
     TEST_CASE("Linear vector multiple fragments (UnitTest5)") {
         const size_t FRAME_SIZE = (MTU * 5) + (MTU / 2);
 
-        efp::Sender lSender(MTU);
-        efp::Receiver lReceiver(50, 20);
-
         std::atomic<bool> lDataReceived{false};
 
-        lSender.setCallback([&](const uint8_t* apData, size_t aSize, uint8_t) {
-            auto lResult = lReceiver.receive(apData, aSize, 0);
-            CHECK(lResult == efp::Result::OK);
-        });
-
-        lReceiver.setCallback([&](efp::SuperFramePtr apFrame) {
+        auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
             CHECK(apFrame->mStreamId == 1);
             CHECK(apFrame->mPts == 1001);
             CHECK(apFrame->mPayloadCode == 2);
@@ -196,6 +177,11 @@ TEST_SUITE("Basic Functionality") {
                 CHECK(apFrame->mpData[lX] == lVectorChecker++);
             }
             lDataReceived = true;
+        }, 50, 20);
+
+        auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
+            auto lResult = lReceiver.receive(aData, 0);
+            CHECK(lResult == efp::Result::OK);
         });
 
         std::vector<uint8_t> lMyData(FRAME_SIZE);
@@ -213,21 +199,18 @@ TEST_SUITE("Basic Functionality") {
     // All payload types (0-255)
     // =========================================================================
     TEST_CASE("All 256 payload types") {
-        efp::Sender lSender(MTU);
-        efp::Receiver lReceiver(100, 0);
-
         std::atomic<int> lReceived{0};
         uint8_t lLastPayloadType = 0;
         std::mutex lMutex;
 
-        lReceiver.setCallback([&](efp::SuperFramePtr apFrame) {
+        auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
             std::lock_guard<std::mutex> lLock(lMutex);
             lLastPayloadType = apFrame->mPayloadType;
             lReceived++;
-        });
+        }, 100, 0);
 
-        lSender.setCallback([&](const uint8_t* apData, size_t aSize, uint8_t) {
-            (void)lReceiver.receive(apData, aSize, 0);
+        auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
+            (void)lReceiver.receive(aData, 0);
         });
 
         std::vector<uint8_t> lPayload(50);
@@ -244,21 +227,18 @@ TEST_SUITE("Basic Functionality") {
     // All stream IDs (1-255, 0 reserved)
     // =========================================================================
     TEST_CASE("All stream IDs 1-255") {
-        efp::Sender lSender(MTU);
-        efp::Receiver lReceiver(100, 0);
-
         std::atomic<int> lReceived{0};
         std::set<uint8_t> lReceivedStreams;
         std::mutex lMutex;
 
-        lReceiver.setCallback([&](efp::SuperFramePtr apFrame) {
+        auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
             std::lock_guard<std::mutex> lLock(lMutex);
             lReceivedStreams.insert(apFrame->mStreamId);
             lReceived++;
-        });
+        }, 100, 0);
 
-        lSender.setCallback([&](const uint8_t* apData, size_t aSize, uint8_t) {
-            (void)lReceiver.receive(apData, aSize, 0);
+        auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
+            (void)lReceiver.receive(aData, 0);
         });
 
         std::vector<uint8_t> lPayload(50);
@@ -278,19 +258,16 @@ TEST_SUITE("Basic Functionality") {
     // FOURCC code generation and preservation
     // =========================================================================
     TEST_CASE("FOURCC code generation") {
-        efp::Sender lSender(MTU);
-        efp::Receiver lReceiver(100, 0);
-
         std::atomic<bool> lReceived{false};
         uint32_t lCapturedCode = 0;
 
-        lReceiver.setCallback([&](efp::SuperFramePtr apFrame) {
+        auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
             lCapturedCode = apFrame->mPayloadCode;
             lReceived = true;
-        });
+        }, 100, 0);
 
-        lSender.setCallback([&](const uint8_t* apData, size_t aSize, uint8_t) {
-            (void)lReceiver.receive(apData, aSize, 0);
+        auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
+            (void)lReceiver.receive(aData, 0);
         });
 
         std::vector<uint8_t> lPayload(100);
@@ -309,19 +286,16 @@ TEST_SUITE("Basic Functionality") {
     // Media types from efp_media_types.h
     // =========================================================================
     TEST_CASE("Media types usage") {
-        efp::Sender lSender(MTU);
-        efp::Receiver lReceiver(100, 0);
-
         std::atomic<bool> lReceived{false};
 
-        lReceiver.setCallback([&](efp::SuperFramePtr apFrame) {
+        auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
             CHECK(apFrame->mPayloadType == efp::media::PayloadType::H264);
             CHECK(apFrame->mPayloadCode == efp::media::PayloadCode::ANXB);
             lReceived = true;
-        });
+        }, 100, 0);
 
-        lSender.setCallback([&](const uint8_t* apData, size_t aSize, uint8_t) {
-            (void)lReceiver.receive(apData, aSize, 0);
+        auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
+            (void)lReceiver.receive(aData, 0);
         });
 
         std::vector<uint8_t> lPayload(1000);
@@ -339,20 +313,17 @@ TEST_SUITE("Basic Functionality") {
     // PTS/DTS handling
     // =========================================================================
     TEST_CASE("PTS/DTS handling") {
-        efp::Sender lSender(MTU);
-        efp::Receiver lReceiver(100, 0);
-
         SUBCASE("PTS == DTS") {
             std::atomic<bool> lReceived{false};
 
-            lReceiver.setCallback([&](efp::SuperFramePtr apFrame) {
+            auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
                 CHECK(apFrame->mPts == 1000);
                 CHECK(apFrame->mDts == 1000);
                 lReceived = true;
-            });
+            }, 100, 0);
 
-            lSender.setCallback([&](const uint8_t* apData, size_t aSize, uint8_t) {
-                (void)lReceiver.receive(apData, aSize, 0);
+            auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
+                (void)lReceiver.receive(aData, 0);
             });
 
             std::vector<uint8_t> lPayload(100);
@@ -364,14 +335,14 @@ TEST_SUITE("Basic Functionality") {
         SUBCASE("PTS > DTS") {
             std::atomic<bool> lReceived{false};
 
-            lReceiver.setCallback([&](efp::SuperFramePtr apFrame) {
+            auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
                 CHECK(apFrame->mPts == 2000);
                 CHECK(apFrame->mDts == 1000);
                 lReceived = true;
-            });
+            }, 100, 0);
 
-            lSender.setCallback([&](const uint8_t* apData, size_t aSize, uint8_t) {
-                (void)lReceiver.receive(apData, aSize, 0);
+            auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
+                (void)lReceiver.receive(aData, 0);
             });
 
             std::vector<uint8_t> lPayload(100);
@@ -383,14 +354,14 @@ TEST_SUITE("Basic Functionality") {
         SUBCASE("No DTS (UINT64_MAX)") {
             std::atomic<bool> lReceived{false};
 
-            lReceiver.setCallback([&](efp::SuperFramePtr apFrame) {
+            auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
                 CHECK(apFrame->mPts == 1000);
                 CHECK(apFrame->mDts == UINT64_MAX);
                 lReceived = true;
-            });
+            }, 100, 0);
 
-            lSender.setCallback([&](const uint8_t* apData, size_t aSize, uint8_t) {
-                (void)lReceiver.receive(apData, aSize, 0);
+            auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
+                (void)lReceiver.receive(aData, 0);
             });
 
             std::vector<uint8_t> lPayload(100);
@@ -404,13 +375,10 @@ TEST_SUITE("Basic Functionality") {
     // Empty payload error
     // =========================================================================
     TEST_CASE("Empty payload returns error") {
-        efp::Sender lSender(MTU);
-
-        auto lResult = lSender.send(nullptr, 0, 0x01, 1000, 1000, 0, 1);
-        CHECK(lResult == efp::Result::INVALID_PARAMETER);
+        auto lSender = efp::makeSender(MTU, [](std::span<const uint8_t>, uint8_t) {});
 
         std::vector<uint8_t> lEmpty;
-        lResult = lSender.send(lEmpty, 0x01, 1000, 1000, 0, 1);
+        auto lResult = lSender.send(lEmpty, 0x01, 1000, 1000, 0, 1);
         CHECK(lResult == efp::Result::INVALID_PARAMETER);
     }
 
@@ -418,18 +386,15 @@ TEST_SUITE("Basic Functionality") {
     // Flags preservation
     // =========================================================================
     TEST_CASE("Flags preservation") {
-        efp::Sender lSender(MTU);
-        efp::Receiver lReceiver(100, 0);
-
         std::atomic<bool> lReceived{false};
 
-        lReceiver.setCallback([&](efp::SuperFramePtr apFrame) {
+        auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
             CHECK(apFrame->mFlags == efp::Flags::INLINE_PAYLOAD);
             lReceived = true;
-        });
+        }, 100, 0);
 
-        lSender.setCallback([&](const uint8_t* apData, size_t aSize, uint8_t) {
-            (void)lReceiver.receive(apData, aSize, 0);
+        auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
+            (void)lReceiver.receive(aData, 0);
         });
 
         std::vector<uint8_t> lPayload(100);
@@ -442,18 +407,15 @@ TEST_SUITE("Basic Functionality") {
     // Source ID passthrough
     // =========================================================================
     TEST_CASE("Source ID passthrough") {
-        efp::Sender lSender(MTU);
-        efp::Receiver lReceiver(100, 0);
-
         std::atomic<bool> lReceived{false};
 
-        lReceiver.setCallback([&](efp::SuperFramePtr apFrame) {
+        auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
             CHECK(apFrame->mSourceId == 42);
             lReceived = true;
-        });
+        }, 100, 0);
 
-        lSender.setCallback([&](const uint8_t* apData, size_t aSize, uint8_t) {
-            (void)lReceiver.receive(apData, aSize, 42);  // Pass source ID
+        auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
+            (void)lReceiver.receive(aData, 42);  // Pass source ID
         });
 
         std::vector<uint8_t> lPayload(100);
@@ -466,21 +428,18 @@ TEST_SUITE("Basic Functionality") {
     // Exact boundary payloads
     // =========================================================================
     TEST_CASE("Exact MTU boundary payloads") {
-        efp::Sender lSender(MTU);
-        efp::Receiver lReceiver(100, 0);
-
         SUBCASE("Exactly Type2 max payload") {
             std::atomic<bool> lReceived{false};
             size_t lCapturedSize = 0;
 
-            lReceiver.setCallback([&](efp::SuperFramePtr apFrame) {
+            auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
                 lCapturedSize = apFrame->mSize;
                 CHECK(!apFrame->mBroken);
                 lReceived = true;
-            });
+            }, 100, 0);
 
-            lSender.setCallback([&](const uint8_t* apData, size_t aSize, uint8_t) {
-                (void)lReceiver.receive(apData, aSize, 0);
+            auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
+                (void)lReceiver.receive(aData, 0);
             });
 
             auto lMaxType2Payload = MTU - sizeof(efp::FrameType2);
@@ -495,14 +454,14 @@ TEST_SUITE("Basic Functionality") {
             std::atomic<bool> lReceived{false};
             int lFragmentCount = 0;
 
-            lSender.setCallback([&](const uint8_t* apData, size_t aSize, uint8_t) {
-                lFragmentCount++;
-                (void)lReceiver.receive(apData, aSize, 0);
-            });
-
-            lReceiver.setCallback([&](efp::SuperFramePtr apFrame) {
+            auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
                 CHECK(!apFrame->mBroken);
                 lReceived = true;
+            }, 100, 0);
+
+            auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
+                lFragmentCount++;
+                (void)lReceiver.receive(aData, 0);
             });
 
             auto lPayloadSize = MTU - sizeof(efp::FrameType2) + 1;

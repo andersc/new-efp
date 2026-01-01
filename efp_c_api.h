@@ -54,8 +54,8 @@ uint16_t efp_version(void);
 #define EFP_TOO_LARGE_FRAME       -6
 #define EFP_FRAME_SIZE_MISMATCH   -7
 #define EFP_BUFFER_OUT_OF_RESOURCES -8
-#define EFP_BUFFER_OUT_OF_BOUNDS  -9
-#define EFP_MEMORY_ALLOCATION_ERROR -10
+#define EFP_BUFFER_OUT_OF_BOUNDS  (-9)
+#define EFP_MEMORY_ALLOCATION_ERROR (-10)
 
 // Embedded data types
 #define EFP_EMBEDDED_ILLEGAL            0x00
