@@ -370,5 +370,95 @@ TEST_SUITE("Stress Tests") {
         }, std::chrono::milliseconds(15000)));
     }
 
+    // =========================================================================
+    // Test processRetransmits thread-safety with concurrent operations
+    // =========================================================================
+    TEST_CASE("processRetransmits thread-safety with concurrent send and receiveNack" * doctest::timeout(30)) {
+        std::atomic<size_t> lSendCallbackCount{0};
+        std::atomic<bool> lRunning{true};
+        std::mutex lMutex;
+
+        auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t>, uint8_t) {
+            lSendCallbackCount++;
+        }, efp::SubFragmentMode::SINGLE, 1000);  // 1 second retention
+
+        // Thread 1: Continuously send frames
+        std::thread lSendThread([&]() {
+            std::vector<uint8_t> lPayload(MTU * 2);  // Multi-fragment frames
+            uint64_t lPts = 0;
+            while (lRunning) {
+                (void)lSender.send(lPayload, 0x01, lPts, lPts, 42, 1);
+                lPts++;
+                std::this_thread::sleep_for(std::chrono::microseconds(100));
+            }
+        });
+
+        // Thread 2: Continuously send NACKs
+        std::thread lNackThread([&]() {
+            uint16_t lSuperFrameNo = 0;
+            while (lRunning) {
+                std::vector<uint8_t> lNackData(sizeof(efp::FrameType0Nack) + sizeof(efp::NackEntry));
+
+                efp::FrameType0Nack lNackHeader;
+                lNackHeader.mFrameType = efp::makeFrameTypeByte(efp::FrameType::TYPE0, 0);
+                lNackHeader.mSubtype = (uint8_t)(efp::Type0Subtype::NACK);
+                lNackHeader.mNackCount = 1;
+
+                efp::NackEntry lNackEntry;
+                lNackEntry.mStreamId = 1;
+                lNackEntry.mSuperFrameNo = lSuperFrameNo++;
+                lNackEntry.mFragmentNo = 0;
+                lNackEntry.mFragmentCount = 0;
+
+                std::memcpy(lNackData.data(), &lNackHeader, sizeof(lNackHeader));
+                std::memcpy(lNackData.data() + sizeof(lNackHeader), &lNackEntry, sizeof(lNackEntry));
+
+                (void)lSender.receiveNack(std::span<const uint8_t>(lNackData));
+                std::this_thread::sleep_for(std::chrono::microseconds(150));
+            }
+        });
+
+        // Thread 3: Continuously call processRetransmits
+        std::thread lRetransmitThread([&]() {
+            while (lRunning) {
+                (void)lSender.processRetransmits(5);  // Process up to 5 at a time
+                std::this_thread::sleep_for(std::chrono::microseconds(50));
+            }
+        });
+
+        // Thread 4: Continuously check statistics
+        std::thread lStatsThread([&]() {
+            while (lRunning) {
+                auto lStats = lSender.getStatistics();
+                // Just access stats to ensure no data races
+                (void)lStats.mRetransmittedFragments;
+                (void)lStats.mRetransmitQueueSize;
+                (void)lStats.mNacksReceived;
+                std::this_thread::sleep_for(std::chrono::microseconds(75));
+            }
+        });
+
+        // Let threads run for 2 seconds
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+
+        lRunning = false;
+
+        lSendThread.join();
+        lNackThread.join();
+        lRetransmitThread.join();
+        lStatsThread.join();
+
+        // Verify no crashes occurred and some work was done
+        auto lFinalStats = lSender.getStatistics();
+        CHECK(lFinalStats.mFragmentsSent > 0);
+        CHECK(lSendCallbackCount > 0);
+
+        // If NACKs were processed successfully, we should see some stats
+        // (Not guaranteed due to timing, but at least shouldn't crash)
+        MESSAGE("Fragments sent: " << lFinalStats.mFragmentsSent);
+        MESSAGE("NACKs received: " << lFinalStats.mNacksReceived);
+        MESSAGE("Retransmits: " << lFinalStats.mRetransmittedFragments);
+    }
+
 }
 

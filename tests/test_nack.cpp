@@ -581,4 +581,233 @@ TEST_SUITE("NACK and Retransmission") {
         CHECK(lCompleteReceived.load());
     }
 
+    // =========================================================================
+    // Test processRetransmits invokes callback with byte-identical data
+    // =========================================================================
+    TEST_CASE("processRetransmits invokes callback with byte-identical data and updates statistics") {
+        std::vector<std::vector<uint8_t>> lSentFragments;
+        std::vector<std::vector<uint8_t>> lRetransmittedFragments;
+
+        auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
+            // Track all sent fragments
+            lSentFragments.emplace_back(aData.begin(), aData.end());
+        }, efp::SubFragmentMode::SINGLE, 1000);  // 1 second retention
+
+        // Send a frame that requires multiple fragments
+        const size_t FRAME_SIZE = (MTU - sizeof(efp::FrameType1)) * 4;
+        std::vector<uint8_t> lData(FRAME_SIZE);
+        std::iota(lData.begin(), lData.end(), 0);
+
+        auto lResult = lSender.send(lData, 0x01, 1000, 900, 42, 1);
+        CHECK(lResult == efp::Result::OK);
+        REQUIRE(lSentFragments.size() >= 4);
+
+        // Store original fragments for comparison
+        auto lOriginalFragments = lSentFragments;
+
+        // Build a NACK for fragment 1
+        std::vector<uint8_t> lNackData(sizeof(efp::FrameType0Nack) + sizeof(efp::NackEntry));
+
+        efp::FrameType0Nack lNackHeader;
+        lNackHeader.mFrameType = efp::makeFrameTypeByte(efp::FrameType::TYPE0, 0);
+        lNackHeader.mSubtype = (uint8_t)(efp::Type0Subtype::NACK);
+        lNackHeader.mNackCount = 1;
+
+        efp::NackEntry lNackEntry;
+        lNackEntry.mStreamId = 1;
+        lNackEntry.mSuperFrameNo = 0;
+        lNackEntry.mFragmentNo = 1;
+        lNackEntry.mFragmentCount = 0;
+
+        std::memcpy(lNackData.data(), &lNackHeader, sizeof(lNackHeader));
+        std::memcpy(lNackData.data() + sizeof(lNackHeader), &lNackEntry, sizeof(lNackEntry));
+
+        // Process the NACK
+        lResult = lSender.receiveNack(std::span<const uint8_t>(lNackData));
+        CHECK(lResult == efp::Result::OK);
+
+        auto lStatsBefore = lSender.getStatistics();
+        CHECK(lStatsBefore.mRetransmitQueueSize == 1);
+        CHECK(lStatsBefore.mRetransmittedFragments == 0);
+
+        // Clear sent fragments to track only retransmissions
+        lSentFragments.clear();
+
+        // Process retransmits
+        auto lRetransmitCount = lSender.processRetransmits();
+
+        // Verify return value
+        CHECK(lRetransmitCount == 1);
+
+        // Verify callback was invoked
+        REQUIRE(lSentFragments.size() == 1);
+
+        // Verify retransmitted data is byte-identical to original fragment 1
+        CHECK(lSentFragments[0] == lOriginalFragments[1]);
+
+        // Verify statistics updated
+        auto lStatsAfter = lSender.getStatistics();
+        CHECK(lStatsAfter.mRetransmittedFragments == 1);
+        CHECK(lStatsAfter.mRetransmitQueueSize == 0);
+    }
+
+    // =========================================================================
+    // Test processRetransmits respects aMaxCount limit
+    // =========================================================================
+    TEST_CASE("processRetransmits respects aMaxCount limit") {
+        std::vector<std::vector<uint8_t>> lSentFragments;
+
+        auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
+            lSentFragments.emplace_back(aData.begin(), aData.end());
+        }, efp::SubFragmentMode::SINGLE, 1000);
+
+        // Send a frame that requires multiple fragments
+        const size_t FRAME_SIZE = (MTU - sizeof(efp::FrameType1)) * 6;
+        std::vector<uint8_t> lData(FRAME_SIZE);
+        (void)lSender.send(lData, 0x01, 1000, 900, 42, 1);
+
+        REQUIRE(lSentFragments.size() >= 5);
+
+        // Build NACK for fragments 1, 2, 3
+        std::vector<uint8_t> lNackData(sizeof(efp::FrameType0Nack) + sizeof(efp::NackEntry));
+
+        efp::FrameType0Nack lNackHeader;
+        lNackHeader.mFrameType = efp::makeFrameTypeByte(efp::FrameType::TYPE0, 0);
+        lNackHeader.mSubtype = (uint8_t)(efp::Type0Subtype::NACK);
+        lNackHeader.mNackCount = 1;
+
+        efp::NackEntry lNackEntry;
+        lNackEntry.mStreamId = 1;
+        lNackEntry.mSuperFrameNo = 0;
+        lNackEntry.mFragmentNo = 1;
+        lNackEntry.mFragmentCount = 2;  // Fragments 1, 2, 3
+
+        std::memcpy(lNackData.data(), &lNackHeader, sizeof(lNackHeader));
+        std::memcpy(lNackData.data() + sizeof(lNackHeader), &lNackEntry, sizeof(lNackEntry));
+
+        (void)lSender.receiveNack(std::span<const uint8_t>(lNackData));
+
+        auto lStatsBefore = lSender.getStatistics();
+        CHECK(lStatsBefore.mRetransmitQueueSize == 3);
+
+        // Clear to track only retransmissions
+        lSentFragments.clear();
+
+        // Process only 1 retransmit
+        auto lRetransmitCount = lSender.processRetransmits(1);
+
+        CHECK(lRetransmitCount == 1);
+        CHECK(lSentFragments.size() == 1);
+
+        // Check remaining in queue
+        auto lStatsAfter = lSender.getStatistics();
+        CHECK(lStatsAfter.mRetransmitQueueSize == 2);
+        CHECK(lStatsAfter.mRetransmittedFragments == 1);
+
+        // Process remaining
+        lSentFragments.clear();
+        lRetransmitCount = lSender.processRetransmits();
+
+        CHECK(lRetransmitCount == 2);
+        CHECK(lSentFragments.size() == 2);
+
+        auto lStatsFinal = lSender.getStatistics();
+        CHECK(lStatsFinal.mRetransmitQueueSize == 0);
+        CHECK(lStatsFinal.mRetransmittedFragments == 3);
+    }
+
+    // =========================================================================
+    // Test processRetransmits on empty queue returns zero
+    // =========================================================================
+    TEST_CASE("processRetransmits on empty queue returns zero") {
+        size_t lCallbackCount = 0;
+
+        auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t>, uint8_t) {
+            lCallbackCount++;
+        }, efp::SubFragmentMode::SINGLE, 1000);
+
+        // Send a frame (callback will be invoked)
+        std::vector<uint8_t> lData(100);
+        (void)lSender.send(lData, 0x01, 1000, 900, 42, 1);
+
+        auto lInitialCallbackCount = lCallbackCount;
+
+        // Don't send any NACKs, just call processRetransmits
+        auto lStatsBefore = lSender.getStatistics();
+        CHECK(lStatsBefore.mRetransmitQueueSize == 0);
+
+        auto lRetransmitCount = lSender.processRetransmits();
+
+        // Should return 0
+        CHECK(lRetransmitCount == 0);
+
+        // Callback should not have been invoked again
+        CHECK(lCallbackCount == lInitialCallbackCount);
+
+        // Statistics should be unchanged
+        auto lStatsAfter = lSender.getStatistics();
+        CHECK(lStatsAfter.mRetransmittedFragments == 0);
+        CHECK(lStatsAfter.mRetransmitQueueSize == 0);
+    }
+
+    // =========================================================================
+    // Test processRetransmits skips evicted fragments gracefully
+    // =========================================================================
+    TEST_CASE("processRetransmits skips evicted fragments gracefully") {
+        std::vector<std::vector<uint8_t>> lSentFragments;
+
+        // Very short retention (1ms)
+        auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
+            lSentFragments.emplace_back(aData.begin(), aData.end());
+        }, efp::SubFragmentMode::SINGLE, 1);  // 1ms retention
+
+        // Send a frame
+        const size_t FRAME_SIZE = (MTU - sizeof(efp::FrameType1)) * 3;
+        std::vector<uint8_t> lData(FRAME_SIZE);
+        (void)lSender.send(lData, 0x01, 1000, 900, 42, 1);
+
+        REQUIRE(lSentFragments.size() >= 3);
+
+        // Wait for retention to expire
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+
+        // Send another frame to trigger eviction
+        std::vector<uint8_t> lData2(100);
+        (void)lSender.send(lData2, 0x01, 2000, 1900, 42, 1);
+
+        // Build NACK for evicted fragment
+        std::vector<uint8_t> lNackData(sizeof(efp::FrameType0Nack) + sizeof(efp::NackEntry));
+
+        efp::FrameType0Nack lNackHeader;
+        lNackHeader.mFrameType = efp::makeFrameTypeByte(efp::FrameType::TYPE0, 0);
+        lNackHeader.mSubtype = (uint8_t)(efp::Type0Subtype::NACK);
+        lNackHeader.mNackCount = 1;
+
+        efp::NackEntry lNackEntry;
+        lNackEntry.mStreamId = 1;
+        lNackEntry.mSuperFrameNo = 0;  // First frame (should be evicted)
+        lNackEntry.mFragmentNo = 1;
+        lNackEntry.mFragmentCount = 0;
+
+        std::memcpy(lNackData.data(), &lNackHeader, sizeof(lNackHeader));
+        std::memcpy(lNackData.data() + sizeof(lNackHeader), &lNackEntry, sizeof(lNackEntry));
+
+        // receiveNack should not add to queue since fragment is evicted
+        auto lResult = lSender.receiveNack(std::span<const uint8_t>(lNackData));
+        CHECK(lResult == efp::Result::OK);
+
+        auto lStats = lSender.getStatistics();
+        CHECK(lStats.mNacksReceived == 1);
+        // Queue should be empty since fragment was not found in retention buffer
+        CHECK(lStats.mRetransmitQueueSize == 0);
+
+        // Clear to track only potential retransmissions
+        lSentFragments.clear();
+
+        // processRetransmits should handle empty queue gracefully
+        auto lRetransmitCount = lSender.processRetransmits();
+        CHECK(lRetransmitCount == 0);
+        CHECK(lSentFragments.empty());
+    }
+
 }

@@ -319,6 +319,31 @@ public:
                     aPayloadCode, aStreamId, aFlags);
     }
 
+    // Process pending retransmits from the queue (for SINGLE mode or manual control)
+    // Returns number of fragments retransmitted
+    [[nodiscard]] size_t processRetransmits(size_t aMaxCount = SIZE_MAX) {
+        std::lock_guard<std::mutex> lLock(mMutex);
+
+        size_t lCount = 0;
+        while (!mRetransmitQueue.empty() && lCount < aMaxCount) {
+            auto& lReq = mRetransmitQueue.front();
+            auto lKey = makeRetentionKey(lReq.mSuperFrameNo, lReq.mFragmentNo);
+
+            auto lIt = mRetentionBuffer.find(lKey);
+            if (lIt != mRetentionBuffer.end()) {
+                // Retransmit the fragment
+                mCallback(std::span<const uint8_t>(lIt->second.mData), lIt->second.mStreamId);
+                lIt->second.mRetryCount++;
+                mStatistics.mRetransmittedFragments++;
+                lCount++;
+            }
+
+            mRetransmitQueue.erase(mRetransmitQueue.begin());
+        }
+
+        return lCount;
+    }
+
 private:
     // Retention buffer entry
     struct RetainedFragment {

@@ -111,7 +111,8 @@ class Sender {
                 uint32_t aPayloadCode, uint8_t aStreamId,
                 uint8_t aFlags = Flags::NONE);
 
-    Result receiveNack(std::span<const uint8_t> aData);  // Process NACK for retransmit
+    Result receiveNack(std::span<const uint8_t> aData);  // Process NACK, queue retransmits
+    size_t processRetransmits(size_t aMaxCount = SIZE_MAX);  // Flush retransmit queue
     SenderStatistics getStatistics() const;
 };
 
@@ -191,8 +192,9 @@ auto lSender = efp::makeSender(1400, sendCallback,
 auto lReceiver = efp::makeReceiver(
     receiveCallback,
     [&lSender](std::span<const uint8_t> nackData) {
-        // Route NACK back to sender
+        // Route NACK back to sender and process retransmits immediately
         lSender.receiveNack(nackData);
+        lSender.processRetransmits();  // Flush retransmit queue
     },
     200,  // 200ms frame timeout
     50,   // 50ms HOL timeout
@@ -200,6 +202,8 @@ auto lReceiver = efp::makeReceiver(
     20    // 20ms fixed NACK interval (or 0 for adaptive)
 );
 ```
+
+**Sender retransmission**: When using `SubFragmentMode::SINGLE`, call `processRetransmits()` after `receiveNack()` to immediately send queued retransmissions. For bundled modes (`HALF`, `QUARTER`, `EIGHTH`), retransmits are processed automatically. You can also call `processRetransmits(n)` to limit the number of retransmissions per call for rate limiting.
 
 **Validation**: The receiver throws `std::invalid_argument` if:
 - `aHolTimeoutMs >= aTimeoutMs` (HOL must be less than frame timeout)
