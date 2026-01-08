@@ -55,7 +55,7 @@ TEST_SUITE("Packet Loss") {
                 CHECK(apFrame->mpData[lX] == lVectorChecker++);
             }
             lDataReceived = true;
-        }, 50, 20);
+        }, [](std::span<const uint8_t>) {}, 50, 20);
 
         auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
             lPacketNumber++;
@@ -97,7 +97,7 @@ TEST_SUITE("Packet Loss") {
                 CHECK(apFrame->mpData[lX] == lVectorChecker++);
             }
             lDataReceived = true;
-        }, 50, 20);
+        }, [](std::span<const uint8_t>) {}, 50, 20);
 
         auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
             if ((aData[0] & 0x0f) == (uint8_t)(efp::FrameType::TYPE2)) {
@@ -127,7 +127,7 @@ TEST_SUITE("Packet Loss") {
 
         auto lReceiver = efp::makeReceiver([](efp::SuperFramePtr) {
             // May or may not receive anything - that's ok
-        }, 50, 20);
+        }, [](std::span<const uint8_t>) {}, 50, 20);
 
         for (int lI = 0; lI < 10000; lI++) {
             size_t lGarbageSize = lSizeDis(lGen);
@@ -154,7 +154,7 @@ TEST_SUITE("Packet Loss") {
         auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
             lReceived++;
             if (apFrame->mBroken) lBroken++;
-        }, 50, 20);
+        }, [](std::span<const uint8_t>) {}, 50, 20);
 
         std::mt19937 lRng(42);
         std::uniform_int_distribution<int> lLossDist(0, 99);

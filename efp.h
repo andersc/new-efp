@@ -29,6 +29,8 @@
 #include <concepts>
 #include <stop_token>
 #include <type_traits>
+#include <algorithm>
+#include <stdexcept>
 
 #include "efp_internal.h"
 
@@ -57,6 +59,9 @@ concept SendCallbackConcept = std::invocable<T, std::span<const uint8_t>, uint8_
 template<typename T>
 concept ReceiveCallbackConcept = std::invocable<T, SuperFramePtr>;
 
+template<typename T>
+concept NackCallbackConcept = std::invocable<T, std::span<const uint8_t>>;
+
 // Result codes
 enum class Result : int16_t {
     // Errors (negative)
@@ -78,6 +83,42 @@ enum class Result : int16_t {
     DUPLICATE_FRAGMENT       = 1,
     FRAGMENT_TOO_OLD         = 2,
     FRAME_TIMEOUT            = 3,
+};
+
+// Sub-fragment modes for bundled transmission
+enum class SubFragmentMode : uint8_t {
+    SINGLE  = 1,  // Normal mode: 1 fragment per UDP packet (default)
+    HALF    = 2,  // 2 fragments per UDP packet
+    QUARTER = 4,  // 4 fragments per UDP packet
+    EIGHTH  = 8   // 8 fragments per UDP packet
+};
+
+//------------------------------------------------------------------------------
+// Statistics structures for sender and receiver
+//------------------------------------------------------------------------------
+
+struct SenderStatistics {
+    uint64_t mRetentionBufferBytes      = 0;  // Current bytes in retention buffer
+    uint32_t mRetentionBufferFragments  = 0;  // Current fragments in retention buffer
+    uint64_t mFragmentsSent             = 0;  // Total fragments sent
+    uint64_t mBundlesSent               = 0;  // Total Type4 bundles sent
+    uint64_t mNacksReceived             = 0;  // Total NACKs received
+    uint64_t mRetransmittedFragments    = 0;  // Total fragments retransmitted
+    uint32_t mRetransmitQueueSize       = 0;  // Current retransmit queue depth
+    double   mFragmentsPerSecond        = 0;  // Recent send rate (sliding window)
+    double   mRetransmitsPerSecond      = 0;  // Recent retransmit rate
+};
+
+struct ReceiverStatistics {
+    uint64_t mFragmentsReceived     = 0;  // Total fragments received
+    uint64_t mBundlesReceived       = 0;  // Total Type4 bundles received
+    uint64_t mNacksSent             = 0;  // Total NACKs sent
+    uint64_t mCompleteFrames        = 0;  // Total complete SuperFrames delivered
+    uint64_t mBrokenFrames          = 0;  // Total broken SuperFrames delivered
+    uint64_t mDuplicateFragments    = 0;  // Duplicate fragments received
+    uint32_t mPendingBuckets        = 0;  // Current active buckets
+    double   mFragmentsPerSecond    = 0;  // Recent receive rate
+    double   mNacksPerSecond        = 0;  // Recent NACK rate
 };
 
 // Receiver operating modes
@@ -143,10 +184,19 @@ template<typename SendCallbackT, uint16_t BUFFER_SIZE = DEFAULT_BUFFER_SIZE>
     requires ValidBufferSize<BUFFER_SIZE> && SendCallbackConcept<SendCallbackT>
 class Sender {
 public:
-    explicit Sender(uint16_t aMtu, SendCallbackT aCallback)
-        : mMtu(aMtu), mCallback(std::move(aCallback)) {
+    explicit Sender(uint16_t aMtu, SendCallbackT aCallback,
+                    SubFragmentMode aSubFragmentMode = SubFragmentMode::SINGLE,
+                    uint32_t aRetentionMs = 0,
+                    size_t aRetentionMaxBytes = 50 * 1024 * 1024)
+        : mMtu(aMtu), mCallback(std::move(aCallback)),
+          mSubFragmentMode(aSubFragmentMode),
+          mRetentionMs(aRetentionMs), mRetentionMaxBytes(aRetentionMaxBytes) {
         if (mMtu < 256) mMtu = 256;
         mSendBuffer.resize(mMtu);
+        // For bundled mode, we need a larger buffer for the bundle
+        if (mSubFragmentMode != SubFragmentMode::SINGLE) {
+            mBundleBuffer.resize(mMtu * (uint8_t)(mSubFragmentMode) + sizeof(FrameType4));
+        }
     }
 
     ~Sender() = default;
@@ -160,6 +210,68 @@ public:
     // Get version
     [[nodiscard]] static consteval uint16_t version() noexcept { return VERSION; }
 
+    // Get current statistics
+    [[nodiscard]] SenderStatistics getStatistics() const {
+        std::lock_guard<std::mutex> lLock(mMutex);
+        auto lStats = mStatistics;
+        lStats.mRetentionBufferFragments = (uint32_t)(mRetentionBuffer.size());
+        lStats.mRetentionBufferBytes = mRetentionBufferBytes;
+        lStats.mRetransmitQueueSize = (uint32_t)(mRetransmitQueue.size());
+        return lStats;
+    }
+
+    // Process incoming NACK from receiver
+    [[nodiscard]] Result receiveNack(std::span<const uint8_t> aData) {
+        if (aData.size() < sizeof(FrameType0Nack)) [[unlikely]] {
+            return Result::FRAME_SIZE_MISMATCH;
+        }
+
+        auto* lpHeader = (const FrameType0Nack*)(aData.data());
+
+        // Validate it's a Type0 NACK
+        if (getFrameType(lpHeader->mFrameType) != FrameType::TYPE0) [[unlikely]] {
+            return Result::INVALID_PARAMETER;
+        }
+        if (lpHeader->mSubtype != (uint8_t)(Type0Subtype::NACK)) [[unlikely]] {
+            return Result::INVALID_PARAMETER;
+        }
+
+        auto lExpectedSize = sizeof(FrameType0Nack) + (lpHeader->mNackCount * sizeof(NackEntry));
+        if (aData.size() < lExpectedSize) [[unlikely]] {
+            return Result::FRAME_SIZE_MISMATCH;
+        }
+
+        std::lock_guard<std::mutex> lLock(mMutex);
+
+        auto* lpEntries = (const NackEntry*)(aData.data() + sizeof(FrameType0Nack));
+
+        for (uint8_t lI = 0; lI < lpHeader->mNackCount; lI++) {
+            auto& lEntry = lpEntries[lI];
+
+            // Process each fragment in the range
+            for (uint8_t lJ = 0; lJ <= lEntry.mFragmentCount; lJ++) {
+                auto lFragmentNo = (uint16_t)(lEntry.mFragmentNo + lJ);
+                auto lKey = makeRetentionKey(lEntry.mSuperFrameNo, lFragmentNo);
+
+                auto lIt = mRetentionBuffer.find(lKey);
+                if (lIt != mRetentionBuffer.end()) {
+                    // Add to retransmit queue if not already queued
+                    RetransmitRequest lReq;
+                    lReq.mSuperFrameNo = lEntry.mSuperFrameNo;
+                    lReq.mFragmentNo = lFragmentNo;
+                    lReq.mStreamId = lEntry.mStreamId;
+                    lReq.mDeadlineUs = 0;  // No deadline
+                    lReq.mPriority = 0;
+                    lReq.mRetryCount = lIt->second.mRetryCount;
+                    mRetransmitQueue.push_back(lReq);
+                }
+            }
+        }
+
+        mStatistics.mNacksReceived++;
+        return Result::OK;
+    }
+
     // Pack and send data using span (primary API)
     [[nodiscard]] Result send(std::span<const uint8_t> aData,
                 uint8_t aPayloadType, uint64_t aPts, uint64_t aDts,
@@ -170,6 +282,11 @@ public:
         }
 
         std::lock_guard<std::mutex> lLock(mMutex);
+
+        // Evict old retention entries
+        if (mRetentionMs > 0) {
+            evictOldRetention();
+        }
 
         auto lType1PayloadSize = mMtu - sizeof(FrameType1);
         auto lType2PayloadSize = mMtu - sizeof(FrameType2);
@@ -203,8 +320,110 @@ public:
     }
 
 private:
+    // Retention buffer entry
+    struct RetainedFragment {
+        uint64_t mTimestampUs = 0;       // When fragment was sent
+        uint16_t mSuperFrameNo = 0;      // SuperFrame sequence
+        uint16_t mFragmentNo = 0;        // Fragment within SuperFrame
+        uint8_t  mStreamId = 0;          // Stream ID
+        uint8_t  mRetryCount = 0;        // Times this has been retransmitted
+        std::vector<uint8_t> mData;      // Complete fragment data (Type1/2/3 frame)
+    };
+
+    // Retransmit request entry
+    struct RetransmitRequest {
+        uint16_t mSuperFrameNo = 0;
+        uint16_t mFragmentNo = 0;
+        uint8_t  mStreamId = 0;
+        uint64_t mDeadlineUs = 0;        // When this MUST be sent (0 = no deadline)
+        uint8_t  mPriority = 0;          // Higher = more urgent
+        uint8_t  mRetryCount = 0;        // Times requested
+    };
+
+    [[nodiscard]] static uint32_t makeRetentionKey(uint16_t aSuperFrameNo, uint16_t aFragmentNo) noexcept {
+        return ((uint32_t)(aSuperFrameNo) << 16) | aFragmentNo;
+    }
+
+    [[nodiscard]] int64_t nowUs() const noexcept {
+        return std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+    }
+
+    void evictOldRetention() {
+        auto lNow = nowUs();
+        auto lCutoffUs = lNow - (int64_t)(mRetentionMs) * 1000;
+
+        // Evict by time
+        for (auto lIt = mRetentionBuffer.begin(); lIt != mRetentionBuffer.end(); ) {
+            if (lIt->second.mTimestampUs < lCutoffUs) {
+                mRetentionBufferBytes -= lIt->second.mData.size();
+                lIt = mRetentionBuffer.erase(lIt);
+            } else {
+                ++lIt;
+            }
+        }
+
+        // Evict by size if still over limit
+        while (mRetentionBufferBytes > mRetentionMaxBytes && !mRetentionBuffer.empty()) {
+            // Find oldest entry
+            auto lOldestIt = mRetentionBuffer.begin();
+            for (auto lIt = mRetentionBuffer.begin(); lIt != mRetentionBuffer.end(); ++lIt) {
+                if (lIt->second.mTimestampUs < lOldestIt->second.mTimestampUs) {
+                    lOldestIt = lIt;
+                }
+            }
+            mRetentionBufferBytes -= lOldestIt->second.mData.size();
+            mRetentionBuffer.erase(lOldestIt);
+        }
+    }
+
+    void retainFragment(uint16_t aSuperFrameNo, uint16_t aFragmentNo, uint8_t aStreamId,
+                        const uint8_t* apData, size_t aSize) {
+        if (mRetentionMs == 0) return;
+
+        auto lKey = makeRetentionKey(aSuperFrameNo, aFragmentNo);
+
+        RetainedFragment lFrag;
+        lFrag.mTimestampUs = nowUs();
+        lFrag.mSuperFrameNo = aSuperFrameNo;
+        lFrag.mFragmentNo = aFragmentNo;
+        lFrag.mStreamId = aStreamId;
+        lFrag.mRetryCount = 0;
+        lFrag.mData.assign(apData, apData + aSize);
+
+        mRetentionBufferBytes += aSize;
+        mRetentionBuffer[lKey] = std::move(lFrag);
+    }
+
     void invokeCallback(size_t aSize, uint8_t aStreamId) {
         mCallback(std::span<const uint8_t>(mSendBuffer.data(), aSize), aStreamId);
+        mStatistics.mFragmentsSent++;
+    }
+
+    void invokeBundleCallback(size_t aSize, uint8_t aStreamId) {
+        mCallback(std::span<const uint8_t>(mBundleBuffer.data(), aSize), aStreamId);
+        mStatistics.mBundlesSent++;
+    }
+
+    // Check if we should process retransmits and get one if available
+    bool getRetransmitFragment(std::vector<uint8_t>& rData) {
+        if (mRetransmitQueue.empty()) return false;
+
+        auto& lReq = mRetransmitQueue.front();
+        auto lKey = makeRetentionKey(lReq.mSuperFrameNo, lReq.mFragmentNo);
+
+        auto lIt = mRetentionBuffer.find(lKey);
+        if (lIt == mRetentionBuffer.end()) {
+            // Fragment no longer in retention buffer, skip
+            mRetransmitQueue.erase(mRetransmitQueue.begin());
+            return false;
+        }
+
+        rData = lIt->second.mData;
+        lIt->second.mRetryCount++;
+        mStatistics.mRetransmittedFragments++;
+        mRetransmitQueue.erase(mRetransmitQueue.begin());
+        return true;
     }
 
     Result sendType2Only(const uint8_t* apData, size_t aSize,
@@ -226,7 +445,12 @@ private:
         std::memcpy(mSendBuffer.data(), &lHeader, sizeof(lHeader));
         std::memcpy(mSendBuffer.data() + sizeof(lHeader), apData, aSize);
 
-        invokeCallback(sizeof(lHeader) + aSize, aStreamId);
+        auto lTotalSize = sizeof(lHeader) + aSize;
+
+        // Retain if enabled
+        retainFragment(lHeader.mSuperFrameNo, 0, aStreamId, mSendBuffer.data(), lTotalSize);
+
+        invokeCallback(lTotalSize, aStreamId);
 
         return Result::OK;
     }
@@ -278,36 +502,70 @@ private:
         auto lOfFragmentNo = (uint16_t)(lTotalFragments - 1);
         size_t lDataOffset = 0;
 
+        // Determine bundle size based on mode
+        auto lBundleSize = (uint8_t)(mSubFragmentMode);
+
+        if (mSubFragmentMode == SubFragmentMode::SINGLE) {
+            // Original behavior: send each fragment individually
+            return sendFragmentedSingle(apData, aSize, aPayloadType, aPts, aDtsPtsDiff,
+                                        aPayloadCode, aStreamId, aFlags, aType1PayloadSize,
+                                        lSuperFrameNo, lOfFragmentNo, lNumType1Fragments,
+                                        lNeedsType3, lType3DataSize, lType2DataSize);
+        }
+
+        // Bundled mode: pack multiple fragments into Type4 bundles
+        return sendFragmentedBundled(apData, aSize, aPayloadType, aPts, aDtsPtsDiff,
+                                     aPayloadCode, aStreamId, aFlags, aType1PayloadSize,
+                                     lSuperFrameNo, lOfFragmentNo, lNumType1Fragments,
+                                     lNeedsType3, lType3DataSize, lType2DataSize, lBundleSize);
+    }
+
+    Result sendFragmentedSingle(const uint8_t* apData, size_t aSize,
+                                uint8_t aPayloadType, uint64_t aPts, uint32_t aDtsPtsDiff,
+                                uint32_t aPayloadCode, uint8_t aStreamId, uint8_t aFlags,
+                                size_t aType1PayloadSize, uint16_t aSuperFrameNo,
+                                uint16_t aOfFragmentNo, size_t aNumType1Fragments,
+                                bool aNeedsType3, size_t aType3DataSize, size_t aType2DataSize) {
+
+        size_t lDataOffset = 0;
+
         // Send Type1 fragments
-        for (size_t lFragNo = 0; lFragNo < lNumType1Fragments; lFragNo++) {
+        for (size_t lFragNo = 0; lFragNo < aNumType1Fragments; lFragNo++) {
             FrameType1 lHeader;
             lHeader.mFrameType = makeFrameTypeByte(FrameType::TYPE1, aFlags);
             lHeader.mStreamId = aStreamId;
-            lHeader.mSuperFrameNo = lSuperFrameNo;
+            lHeader.mSuperFrameNo = aSuperFrameNo;
             lHeader.mFragmentNo = (uint16_t)(lFragNo);
-            lHeader.mOfFragmentNo = lOfFragmentNo;
+            lHeader.mOfFragmentNo = aOfFragmentNo;
 
             std::memcpy(mSendBuffer.data(), &lHeader, sizeof(lHeader));
             std::memcpy(mSendBuffer.data() + sizeof(lHeader), apData + lDataOffset, aType1PayloadSize);
             lDataOffset += aType1PayloadSize;
 
+            // Retain if enabled
+            retainFragment(aSuperFrameNo, (uint16_t)(lFragNo), aStreamId, mSendBuffer.data(), mMtu);
+
             invokeCallback(mMtu, aStreamId);
         }
 
         // Send Type3 if needed (penultimate fragment)
-        if (lNeedsType3) [[unlikely]] {
+        if (aNeedsType3) [[unlikely]] {
             FrameType3 lHeader;
             lHeader.mFrameType = makeFrameTypeByte(FrameType::TYPE3, aFlags);
             lHeader.mStreamId = aStreamId;
-            lHeader.mSuperFrameNo = lSuperFrameNo;
+            lHeader.mSuperFrameNo = aSuperFrameNo;
             lHeader.mType1PacketSize = (uint16_t)(aType1PayloadSize);
-            lHeader.mOfFragmentNo = lOfFragmentNo;
+            lHeader.mOfFragmentNo = aOfFragmentNo;
 
             std::memcpy(mSendBuffer.data(), &lHeader, sizeof(lHeader));
-            std::memcpy(mSendBuffer.data() + sizeof(lHeader), apData + lDataOffset, lType3DataSize);
-            lDataOffset += lType3DataSize;
+            std::memcpy(mSendBuffer.data() + sizeof(lHeader), apData + lDataOffset, aType3DataSize);
+            lDataOffset += aType3DataSize;
 
-            invokeCallback(sizeof(lHeader) + lType3DataSize, aStreamId);
+            auto lTotalSize = sizeof(lHeader) + aType3DataSize;
+            retainFragment(aSuperFrameNo, (uint16_t)(aOfFragmentNo - 1), aStreamId,
+                           mSendBuffer.data(), lTotalSize);
+
+            invokeCallback(lTotalSize, aStreamId);
         }
 
         // Send Type2 (final fragment)
@@ -315,53 +573,211 @@ private:
         lHeader.mFrameType = makeFrameTypeByte(FrameType::TYPE2, aFlags);
         lHeader.mStreamId = aStreamId;
         lHeader.mPayloadType = aPayloadType;
-        lHeader.mSizeOfData = (uint16_t)(lType2DataSize);
-        lHeader.mSuperFrameNo = lSuperFrameNo;
-        lHeader.mOfFragmentNo = lOfFragmentNo;
+        lHeader.mSizeOfData = (uint16_t)(aType2DataSize);
+        lHeader.mSuperFrameNo = aSuperFrameNo;
+        lHeader.mOfFragmentNo = aOfFragmentNo;
         lHeader.mType1PacketSize = (uint16_t)(aType1PayloadSize);
         lHeader.mPts = aPts;
         lHeader.mDtsPtsDiff = aDtsPtsDiff;
         lHeader.mPayloadCode = aPayloadCode;
 
         std::memcpy(mSendBuffer.data(), &lHeader, sizeof(lHeader));
-        std::memcpy(mSendBuffer.data() + sizeof(lHeader), apData + lDataOffset, lType2DataSize);
+        std::memcpy(mSendBuffer.data() + sizeof(lHeader), apData + lDataOffset, aType2DataSize);
 
-        invokeCallback(sizeof(lHeader) + lType2DataSize, aStreamId);
+        auto lTotalSize = sizeof(lHeader) + aType2DataSize;
+        retainFragment(aSuperFrameNo, aOfFragmentNo, aStreamId, mSendBuffer.data(), lTotalSize);
+
+        invokeCallback(lTotalSize, aStreamId);
+
+        return Result::OK;
+    }
+
+    Result sendFragmentedBundled(const uint8_t* apData, size_t aSize,
+                                 uint8_t aPayloadType, uint64_t aPts, uint32_t aDtsPtsDiff,
+                                 uint32_t aPayloadCode, uint8_t aStreamId, uint8_t aFlags,
+                                 size_t aType1PayloadSize, uint16_t aSuperFrameNo,
+                                 uint16_t aOfFragmentNo, size_t aNumType1Fragments,
+                                 bool aNeedsType3, size_t aType3DataSize, size_t aType2DataSize,
+                                 uint8_t aBundleSize) {
+
+        // Collect all fragments into a temporary list
+        std::vector<std::vector<uint8_t>> lFragments;
+        lFragments.reserve(aOfFragmentNo + 1);
+
+        size_t lDataOffset = 0;
+
+        // Build Type1 fragments
+        for (size_t lFragNo = 0; lFragNo < aNumType1Fragments; lFragNo++) {
+            FrameType1 lHeader;
+            lHeader.mFrameType = makeFrameTypeByte(FrameType::TYPE1, aFlags);
+            lHeader.mStreamId = aStreamId;
+            lHeader.mSuperFrameNo = aSuperFrameNo;
+            lHeader.mFragmentNo = (uint16_t)(lFragNo);
+            lHeader.mOfFragmentNo = aOfFragmentNo;
+
+            std::vector<uint8_t> lFrag(mMtu);
+            std::memcpy(lFrag.data(), &lHeader, sizeof(lHeader));
+            std::memcpy(lFrag.data() + sizeof(lHeader), apData + lDataOffset, aType1PayloadSize);
+            lDataOffset += aType1PayloadSize;
+
+            lFragments.push_back(std::move(lFrag));
+        }
+
+        // Build Type3 if needed
+        if (aNeedsType3) [[unlikely]] {
+            FrameType3 lHeader;
+            lHeader.mFrameType = makeFrameTypeByte(FrameType::TYPE3, aFlags);
+            lHeader.mStreamId = aStreamId;
+            lHeader.mSuperFrameNo = aSuperFrameNo;
+            lHeader.mType1PacketSize = (uint16_t)(aType1PayloadSize);
+            lHeader.mOfFragmentNo = aOfFragmentNo;
+
+            std::vector<uint8_t> lFrag(sizeof(lHeader) + aType3DataSize);
+            std::memcpy(lFrag.data(), &lHeader, sizeof(lHeader));
+            std::memcpy(lFrag.data() + sizeof(lHeader), apData + lDataOffset, aType3DataSize);
+            lDataOffset += aType3DataSize;
+
+            lFragments.push_back(std::move(lFrag));
+        }
+
+        // Build Type2 (final fragment)
+        {
+            FrameType2 lHeader;
+            lHeader.mFrameType = makeFrameTypeByte(FrameType::TYPE2, aFlags);
+            lHeader.mStreamId = aStreamId;
+            lHeader.mPayloadType = aPayloadType;
+            lHeader.mSizeOfData = (uint16_t)(aType2DataSize);
+            lHeader.mSuperFrameNo = aSuperFrameNo;
+            lHeader.mOfFragmentNo = aOfFragmentNo;
+            lHeader.mType1PacketSize = (uint16_t)(aType1PayloadSize);
+            lHeader.mPts = aPts;
+            lHeader.mDtsPtsDiff = aDtsPtsDiff;
+            lHeader.mPayloadCode = aPayloadCode;
+
+            std::vector<uint8_t> lFrag(sizeof(lHeader) + aType2DataSize);
+            std::memcpy(lFrag.data(), &lHeader, sizeof(lHeader));
+            std::memcpy(lFrag.data() + sizeof(lHeader), apData + lDataOffset, aType2DataSize);
+
+            lFragments.push_back(std::move(lFrag));
+        }
+
+        // Now send fragments in bundles
+        size_t lFragIdx = 0;
+        while (lFragIdx < lFragments.size()) {
+            // Build bundle header
+            FrameType4 lBundleHeader;
+            lBundleHeader.mFrameType = makeFrameTypeByte(FrameType::TYPE4, aFlags);
+
+            auto lFragsInBundle = std::min((size_t)(aBundleSize), lFragments.size() - lFragIdx);
+
+            // Check for retransmit fragments to interleave
+            std::vector<uint8_t> lRetransmitData;
+            auto lHasRetransmit = false;
+            if (!mRetransmitQueue.empty() && lFragsInBundle > 1) {
+                lHasRetransmit = getRetransmitFragment(lRetransmitData);
+                if (lHasRetransmit) {
+                    lFragsInBundle--;  // Make room for retransmit
+                }
+            }
+
+            lBundleHeader.mFrameCount = (uint8_t)(lFragsInBundle + (lHasRetransmit ? 1 : 0));
+
+            // Build bundle
+            size_t lBundleOffset = 0;
+            std::memcpy(mBundleBuffer.data(), &lBundleHeader, sizeof(lBundleHeader));
+            lBundleOffset += sizeof(lBundleHeader);
+
+            // Add retransmit fragment first if present
+            if (lHasRetransmit) {
+                std::memcpy(mBundleBuffer.data() + lBundleOffset, lRetransmitData.data(), lRetransmitData.size());
+                lBundleOffset += lRetransmitData.size();
+            }
+
+            // Add current fragments
+            for (size_t lI = 0; lI < lFragsInBundle; lI++) {
+                auto& lFrag = lFragments[lFragIdx + lI];
+
+                // Retain fragment
+                auto lFragNo = (uint16_t)(lFragIdx + lI);
+                // Adjust for Type3 being at ofFragmentNo - 1
+                if (aNeedsType3 && lFragNo == aOfFragmentNo) {
+                    // This is Type2, already at correct index
+                } else if (aNeedsType3 && lFragNo == aOfFragmentNo - 1) {
+                    // This is Type3
+                }
+                retainFragment(aSuperFrameNo, lFragNo, aStreamId, lFrag.data(), lFrag.size());
+
+                std::memcpy(mBundleBuffer.data() + lBundleOffset, lFrag.data(), lFrag.size());
+                lBundleOffset += lFrag.size();
+                mStatistics.mFragmentsSent++;
+            }
+
+            invokeBundleCallback(lBundleOffset, aStreamId);
+            lFragIdx += lFragsInBundle;
+        }
 
         return Result::OK;
     }
 
     uint16_t mMtu;
     uint16_t mSuperFrameNo = 0;
-    std::mutex mMutex;
+    SubFragmentMode mSubFragmentMode;
+    uint32_t mRetentionMs;
+    size_t mRetentionMaxBytes;
+    size_t mRetentionBufferBytes = 0;
+    mutable std::mutex mMutex;
     std::vector<uint8_t> mSendBuffer;
+    std::vector<uint8_t> mBundleBuffer;
+    std::map<uint32_t, RetainedFragment> mRetentionBuffer;
+    std::vector<RetransmitRequest> mRetransmitQueue;
+    SenderStatistics mStatistics;
     [[no_unique_address]] SendCallbackT mCallback;
 };
 
 // Deduction guide for Sender
 template<typename SendCallbackT>
-Sender(uint16_t, SendCallbackT) -> Sender<SendCallbackT>;
+Sender(uint16_t, SendCallbackT, SubFragmentMode = SubFragmentMode::SINGLE,
+       uint32_t = 0, size_t = 50 * 1024 * 1024) -> Sender<SendCallbackT>;
 
 // Factory function for easier instantiation
 template<typename SendCallbackT, uint16_t BUFFER_SIZE = DEFAULT_BUFFER_SIZE>
     requires SendCallbackConcept<SendCallbackT>
-[[nodiscard]] auto makeSender(uint16_t aMtu, SendCallbackT aCallback) {
-    return Sender<SendCallbackT, BUFFER_SIZE>(aMtu, std::move(aCallback));
+[[nodiscard]] auto makeSender(uint16_t aMtu, SendCallbackT aCallback,
+                               SubFragmentMode aSubFragmentMode = SubFragmentMode::SINGLE,
+                               uint32_t aRetentionMs = 0,
+                               size_t aRetentionMaxBytes = 50 * 1024 * 1024) {
+    return Sender<SendCallbackT, BUFFER_SIZE>(aMtu, std::move(aCallback),
+                                               aSubFragmentMode, aRetentionMs, aRetentionMaxBytes);
 }
 
 //------------------------------------------------------------------------------
 // Receiver: Reassembles EFP fragments into SuperFrames
 // Template callback for zero-overhead invocation (no std::function)
 //------------------------------------------------------------------------------
-template<typename ReceiveCallbackT, uint16_t BUFFER_SIZE = DEFAULT_BUFFER_SIZE>
-    requires ValidBufferSize<BUFFER_SIZE> && ReceiveCallbackConcept<ReceiveCallbackT>
+template<typename ReceiveCallbackT, typename NackCallbackT, uint16_t BUFFER_SIZE = DEFAULT_BUFFER_SIZE>
+    requires ValidBufferSize<BUFFER_SIZE> && ReceiveCallbackConcept<ReceiveCallbackT> && NackCallbackConcept<NackCallbackT>
 class Receiver {
 public:
-    explicit Receiver(ReceiveCallbackT aCallback, uint32_t aTimeoutMs = 100,
+    explicit Receiver(ReceiveCallbackT aCallback, NackCallbackT aNackCallback,
+                      uint32_t aTimeoutMs = 100,
                       uint32_t aHolTimeoutMs = 0,
+                      uint8_t aMaxNackRetries = 3,
+                      uint32_t aNackIntervalMs = 0,
                       ReceiverMode aMode = ReceiverMode::THREADED)
-        : mCallback(std::move(aCallback)), mTimeoutMs(aTimeoutMs),
-          mHolTimeoutMs(aHolTimeoutMs), mMode(aMode) {
+        : mCallback(std::move(aCallback)), mNackCallback(std::move(aNackCallback)),
+          mTimeoutMs(aTimeoutMs), mHolTimeoutMs(aHolTimeoutMs),
+          mMaxNackRetries(aMaxNackRetries), mNackIntervalMs(aNackIntervalMs), mMode(aMode) {
+
+        // Validate timing configuration
+        if (mHolTimeoutMs > 0 && mHolTimeoutMs >= mTimeoutMs) {
+            throw std::invalid_argument("HOL timeout must be less than frame timeout");
+        }
+        if (mMaxNackRetries > 0 && mNackIntervalMs > 0) {
+            auto lNackBudgetMs = mNackIntervalMs * mMaxNackRetries;
+            if (lNackBudgetMs >= mTimeoutMs) {
+                throw std::invalid_argument("NACK budget (interval * retries) must be less than frame timeout");
+            }
+        }
 
         mpBuckets = new Bucket[BUFFER_SIZE + 1];
 
@@ -412,6 +828,9 @@ public:
             case FrameType::TYPE3:
                 lResult = handleType3(aData.data(), aData.size(), aSourceId);
                 break;
+            case FrameType::TYPE4:
+                lResult = handleType4(aData.data(), aData.size(), aSourceId);
+                break;
             default:
                 return Result::INVALID_PARAMETER;
         }
@@ -441,6 +860,14 @@ public:
     // Get number of pending (incomplete) frames in the bucket map
     [[nodiscard]] size_t pendingCount() const {
         return mBucketMap.size();
+    }
+
+    // Get current statistics
+    [[nodiscard]] ReceiverStatistics getStatistics() const {
+        std::lock_guard<std::recursive_mutex> lLock(mNetMutex);
+        auto lStats = mStatistics;
+        lStats.mPendingBuckets = (uint32_t)(mBucketMap.size());
+        return lStats;
     }
 
     // Stop receiver threads (jthreads auto-join on destruction but this allows early stop)
@@ -487,6 +914,9 @@ private:
         uint8_t  mStreamId       = 0;
         uint8_t  mSourceId       = 0;
         uint8_t  mFlags          = 0;
+        int64_t  mFirstArrivalUs = 0;  // When first fragment arrived (for NACK timing)
+        int64_t  mLastNackUs     = 0;  // When last NACK was sent (0 = never)
+        uint8_t  mNackCount      = 0;  // Number of NACKs sent for this bucket
         std::bitset<8192> mReceivedFragments;  // Max fragments per superframe
         SuperFramePtr mpFrame;
     };
@@ -494,6 +924,156 @@ private:
     [[nodiscard]] int64_t nowUs() const noexcept {
         return std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count();
+    }
+
+    // Update jitter estimate using RFC 3550 algorithm (exponential moving average)
+    void updateJitter(int64_t aArrivalUs) noexcept {
+        if (mLastArrivalUs > 0) [[likely]] {
+            auto lInterArrival = aArrivalUs - mLastArrivalUs;
+            auto lDeviation = lInterArrival - mExpectedIntervalUs;
+            if (lDeviation < 0) lDeviation = -lDeviation;
+            // J(i) = J(i-1) + (|D(i)| - J(i-1)) / 16
+            mJitterUs += (lDeviation - mJitterUs) / 16;
+            // Update expected interval as moving average
+            mExpectedIntervalUs += (lInterArrival - mExpectedIntervalUs) / 16;
+        }
+        mLastArrivalUs = aArrivalUs;
+    }
+
+    // Calculate delay before sending NACK (adaptive or manual)
+    [[nodiscard]] int64_t calculateNackDelayUs(const Bucket* apBucket) const noexcept {
+        int64_t lBaseDelayUs;
+        if (mNackIntervalMs > 0) {
+            // Manual override: use fixed interval
+            lBaseDelayUs = (int64_t)(mNackIntervalMs) * 1000;
+        } else {
+            // Adaptive: use 4x jitter estimate, minimum 10ms
+            lBaseDelayUs = std::max((int64_t)(10000), mJitterUs * 4);
+        }
+
+        // Apply exponential backoff based on retry count
+        auto lBackoffDelayUs = lBaseDelayUs << apBucket->mNackCount;
+
+        // Cap at remaining time to timeout (leave 10ms margin for delivery)
+        auto lRemainingUs = apBucket->mTimeoutUs - nowUs() - 10000;
+        if (lRemainingUs < 0) lRemainingUs = 0;
+
+        return std::min(lBackoffDelayUs, lRemainingUs);
+    }
+
+    // Build NACK message for missing fragments in a bucket
+    [[nodiscard]] std::vector<uint8_t> buildNack(const Bucket* apBucket) const {
+        std::vector<NackEntry> lEntries;
+        lEntries.reserve(16);
+
+        uint16_t lRangeStart = UINT16_MAX;
+        uint16_t lRangeCount = 0;
+
+        // Scan for missing fragments and coalesce consecutive gaps
+        for (uint16_t lI = 0; lI <= apBucket->mOfFragmentNo; lI++) {
+            if (!apBucket->mReceivedFragments[lI]) {
+                // Fragment is missing
+                if (lRangeStart == UINT16_MAX) {
+                    // Start new range
+                    lRangeStart = lI;
+                    lRangeCount = 0;
+                } else if (lRangeCount < 255) {
+                    // Extend current range (max 256 consecutive in one entry)
+                    lRangeCount++;
+                } else {
+                    // Range full, emit and start new
+                    NackEntry lEntry;
+                    lEntry.mStreamId = apBucket->mStreamId;
+                    lEntry.mSuperFrameNo = apBucket->mSavedFrameNo;
+                    lEntry.mFragmentNo = lRangeStart;
+                    lEntry.mFragmentCount = lRangeCount;
+                    lEntries.push_back(lEntry);
+                    lRangeStart = lI;
+                    lRangeCount = 0;
+                }
+            } else if (lRangeStart != UINT16_MAX) {
+                // Fragment received, emit pending range
+                NackEntry lEntry;
+                lEntry.mStreamId = apBucket->mStreamId;
+                lEntry.mSuperFrameNo = apBucket->mSavedFrameNo;
+                lEntry.mFragmentNo = lRangeStart;
+                lEntry.mFragmentCount = lRangeCount;
+                lEntries.push_back(lEntry);
+                lRangeStart = UINT16_MAX;
+                lRangeCount = 0;
+            }
+        }
+
+        // Emit final pending range if any
+        if (lRangeStart != UINT16_MAX) {
+            NackEntry lEntry;
+            lEntry.mStreamId = apBucket->mStreamId;
+            lEntry.mSuperFrameNo = apBucket->mSavedFrameNo;
+            lEntry.mFragmentNo = lRangeStart;
+            lEntry.mFragmentCount = lRangeCount;
+            lEntries.push_back(lEntry);
+        }
+
+        if (lEntries.empty()) {
+            return {};
+        }
+
+        // Limit entries per NACK (mNackCount field is uint8_t, max 255)
+        if (lEntries.size() > 255) {
+            lEntries.resize(255);
+        }
+
+        // Build NACK packet
+        std::vector<uint8_t> lNackData(sizeof(FrameType0Nack) + lEntries.size() * sizeof(NackEntry));
+
+        FrameType0Nack lHeader;
+        lHeader.mFrameType = makeFrameTypeByte(FrameType::TYPE0, 0);
+        lHeader.mSubtype = (uint8_t)(Type0Subtype::NACK);
+        lHeader.mNackCount = (uint8_t)(lEntries.size());
+
+        std::memcpy(lNackData.data(), &lHeader, sizeof(lHeader));
+        std::memcpy(lNackData.data() + sizeof(lHeader), lEntries.data(),
+                    lEntries.size() * sizeof(NackEntry));
+
+        return lNackData;
+    }
+
+    // Process NACKs for all incomplete buckets
+    void processNacks() {
+        if (mMaxNackRetries == 0) return;  // NACKs disabled
+
+        auto lNow = nowUs();
+
+        for (auto& [lOrder, lpBucket] : mBucketMap) {
+            // Skip complete buckets
+            if (lpBucket->mFragmentCount == lpBucket->mOfFragmentNo + 1) continue;
+
+            // Skip if max retries exceeded
+            if (lpBucket->mNackCount >= mMaxNackRetries) continue;
+
+            auto lDelayUs = calculateNackDelayUs(lpBucket);
+            int64_t lTriggerTimeUs;
+
+            if (lpBucket->mLastNackUs == 0) {
+                // First NACK: trigger after grace period from first arrival
+                lTriggerTimeUs = lpBucket->mFirstArrivalUs + lDelayUs;
+            } else {
+                // Retry NACK: trigger after delay from last NACK
+                lTriggerTimeUs = lpBucket->mLastNackUs + lDelayUs;
+            }
+
+            if (lNow < lTriggerTimeUs) continue;
+
+            // Build and send NACK
+            auto lNackData = buildNack(lpBucket);
+            if (lNackData.empty()) continue;
+
+            mNackCallback(std::span<const uint8_t>(lNackData));
+
+            lpBucket->mLastNackUs = lNow;
+            lpBucket->mNackCount++;
+            mStatistics.mNacksSent++;
+        }
     }
 
     [[nodiscard]] uint64_t recalculateSuperFrameNo(uint16_t aFrameNo) noexcept {
@@ -522,6 +1102,9 @@ private:
         }
 
         std::lock_guard<std::recursive_mutex> lLock(mNetMutex);
+
+        auto lNow = nowUs();
+        updateJitter(lNow);
 
         auto* lpHeader = (const FrameType1*)(apData);
 
@@ -560,12 +1143,16 @@ private:
             lpBucket->mSavedFrameNo = lpHeader->mSuperFrameNo;
             lpBucket->mReceivedFragments.reset();
             lpBucket->mReceivedFragments[lpHeader->mFragmentNo] = true;
-            lpBucket->mTimeoutUs = nowUs() + (mTimeoutMs * 1000);
+            lpBucket->mTimeoutUs = lNow + (mTimeoutMs * 1000);
             lpBucket->mFragmentCount = 1;  // First fragment received
             lpBucket->mOfFragmentNo = lpHeader->mOfFragmentNo;
             lpBucket->mFragmentSize = lPayloadSize;
             lpBucket->mPts = UINT64_MAX;
             lpBucket->mDts = UINT64_MAX;
+            lpBucket->mFirstArrivalUs = lNow;  // Track first fragment arrival for NACK timing
+            lpBucket->mLastNackUs = 0;
+            lpBucket->mNackCount = 0;
+            mStatistics.mFragmentsReceived++;
 
             // Get cached stream info
             auto* lpStream = &mStreams[lpHeader->mStreamId];
@@ -599,11 +1186,13 @@ private:
         }
 
         if (lpBucket->mReceivedFragments[lpHeader->mFragmentNo]) [[unlikely]] {
+            mStatistics.mDuplicateFragments++;
             return Result::DUPLICATE_FRAGMENT;
         }
 
         lpBucket->mReceivedFragments[lpHeader->mFragmentNo] = true;
         lpBucket->mFragmentCount++;
+        mStatistics.mFragmentsReceived++;
 
         auto lOffset = lpBucket->mFragmentSize * lpHeader->mFragmentNo;
         std::memcpy(lpBucket->mpFrame->mpData + lOffset, apData + sizeof(FrameType1), lPayloadSize);
@@ -617,6 +1206,9 @@ private:
         }
 
         std::lock_guard<std::recursive_mutex> lLock(mNetMutex);
+
+        auto lNow = nowUs();
+        updateJitter(lNow);
 
         auto* lpHeader = (const FrameType2*)(apData);
 
@@ -653,7 +1245,7 @@ private:
             lpBucket->mSavedFrameNo = lpHeader->mSuperFrameNo;
             lpBucket->mReceivedFragments.reset();
             lpBucket->mReceivedFragments[lpHeader->mOfFragmentNo] = true;
-            lpBucket->mTimeoutUs = nowUs() + (mTimeoutMs * 1000);
+            lpBucket->mTimeoutUs = lNow + (mTimeoutMs * 1000);
             lpBucket->mFragmentCount = 1;  // First fragment received
             lpBucket->mOfFragmentNo = lpHeader->mOfFragmentNo;
             lpBucket->mFragmentSize = lpHeader->mType1PacketSize;
@@ -661,6 +1253,10 @@ private:
             lpBucket->mPts = lpHeader->mPts;
             lpBucket->mPayloadType = lpHeader->mPayloadType;
             lpBucket->mPayloadCode = lpHeader->mPayloadCode;
+            lpBucket->mFirstArrivalUs = lNow;  // Track first fragment arrival for NACK timing
+            lpBucket->mLastNackUs = 0;
+            lpBucket->mNackCount = 0;
+            mStatistics.mFragmentsReceived++;
 
             if (lpHeader->mDtsPtsDiff == UINT32_MAX) [[unlikely]] {
                 lpBucket->mDts = UINT64_MAX;
@@ -699,11 +1295,13 @@ private:
         }
 
         if (lpBucket->mReceivedFragments[lpHeader->mOfFragmentNo]) [[unlikely]] {
+            mStatistics.mDuplicateFragments++;
             return Result::DUPLICATE_FRAGMENT;
         }
 
         lpBucket->mReceivedFragments[lpHeader->mOfFragmentNo] = true;
         lpBucket->mFragmentCount++;
+        mStatistics.mFragmentsReceived++;
         lpBucket->mPts = lpHeader->mPts;
         lpBucket->mPayloadType = lpHeader->mPayloadType;
         lpBucket->mPayloadCode = lpHeader->mPayloadCode;
@@ -747,6 +1345,9 @@ private:
 
         std::lock_guard<std::recursive_mutex> lLock(mNetMutex);
 
+        auto lNow = nowUs();
+        updateJitter(lNow);
+
         auto* lpHeader = (const FrameType3*)(apData);
 
         // Bounds check: ofFragmentNo must fit in bitset and be > 0 for Type3
@@ -781,13 +1382,17 @@ private:
             lpBucket->mSavedFrameNo = lpHeader->mSuperFrameNo;
             lpBucket->mReceivedFragments.reset();
             lpBucket->mReceivedFragments[lFragmentNo] = true;
-            lpBucket->mTimeoutUs = nowUs() + (mTimeoutMs * 1000);
+            lpBucket->mTimeoutUs = lNow + (mTimeoutMs * 1000);
             lpBucket->mFragmentCount = 1;  // First fragment received
             lpBucket->mOfFragmentNo = lpHeader->mOfFragmentNo;
             lpBucket->mFragmentSize = lpHeader->mType1PacketSize;
             lpBucket->mType3Size = lPayloadSize;  // Store Type3 payload size
             lpBucket->mPts = UINT64_MAX;
             lpBucket->mDts = UINT64_MAX;
+            lpBucket->mFirstArrivalUs = lNow;  // Track first fragment arrival for NACK timing
+            lpBucket->mLastNackUs = 0;
+            lpBucket->mNackCount = 0;
+            mStatistics.mFragmentsReceived++;
 
             // Get cached stream info
             auto* lpStream = &mStreams[lpHeader->mStreamId];
@@ -820,11 +1425,13 @@ private:
         }
 
         if (lpBucket->mReceivedFragments[lFragmentNo]) [[unlikely]] {
+            mStatistics.mDuplicateFragments++;
             return Result::DUPLICATE_FRAGMENT;
         }
 
         lpBucket->mReceivedFragments[lFragmentNo] = true;
         lpBucket->mFragmentCount++;
+        mStatistics.mFragmentsReceived++;
         lpBucket->mType3Size = lPayloadSize;  // Store Type3 payload size for Type2's calculation
 
         // If Type2 was received before Type3, we need to relocate Type2's data
@@ -851,6 +1458,107 @@ private:
         return Result::OK;
     }
 
+    Result handleType4(const uint8_t* apData, size_t aSize, uint8_t aSourceId) {
+        if (aSize < sizeof(FrameType4)) [[unlikely]] {
+            return Result::FRAME_SIZE_MISMATCH;
+        }
+
+        auto* lpHeader = (const FrameType4*)(apData);
+
+        if (lpHeader->mFrameCount == 0) [[unlikely]] {
+            return Result::INVALID_PARAMETER;
+        }
+
+        mStatistics.mBundlesReceived++;
+
+        // Process each bundled frame
+        size_t lOffset = sizeof(FrameType4);
+        Result lLastResult = Result::OK;
+
+        for (uint8_t lI = 0; lI < lpHeader->mFrameCount; lI++) {
+            if (lOffset >= aSize) [[unlikely]] {
+                return Result::FRAME_SIZE_MISMATCH;
+            }
+
+            auto lFrameType = getFrameType(apData[lOffset]);
+            size_t lFrameSize = 0;
+
+            // Determine frame size based on type
+            switch (lFrameType) {
+                case FrameType::TYPE1: {
+                    if (lOffset + sizeof(FrameType1) > aSize) [[unlikely]] {
+                        return Result::FRAME_SIZE_MISMATCH;
+                    }
+                    auto* lpType1 = (const FrameType1*)(apData + lOffset);
+                    // Type1 frames in bundles are typically full MTU minus header
+                    // We need to calculate based on the remaining data or use a heuristic
+                    // For now, assume uniform fragment sizes within bundle
+                    // The payload size would be (total size - all headers) / frame count
+                    // But actually, we need to peek at the next frame to know where this one ends
+                    // For Type1, the payload goes until the next frame header or end of bundle
+
+                    // Calculate remaining space for this and subsequent frames
+                    auto lRemainingSize = aSize - lOffset;
+                    auto lRemainingFrames = lpHeader->mFrameCount - lI;
+
+                    // Try to find the next Type1/Type2/Type3 header
+                    lFrameSize = sizeof(FrameType1);
+                    auto lNextOffset = lOffset + sizeof(FrameType1);
+
+                    // Scan for next valid frame type byte or use remaining divided equally
+                    if (lRemainingFrames > 1) {
+                        // Calculate approximate fragment size
+                        auto lApproxFragSize = lRemainingSize / lRemainingFrames;
+                        lFrameSize = lApproxFragSize;
+                    } else {
+                        // Last frame takes all remaining
+                        lFrameSize = lRemainingSize;
+                    }
+
+                    lLastResult = handleType1(apData + lOffset, lFrameSize, aSourceId);
+                    break;
+                }
+                case FrameType::TYPE2: {
+                    if (lOffset + sizeof(FrameType2) > aSize) [[unlikely]] {
+                        return Result::FRAME_SIZE_MISMATCH;
+                    }
+                    auto* lpType2 = (const FrameType2*)(apData + lOffset);
+                    lFrameSize = sizeof(FrameType2) + lpType2->mSizeOfData;
+                    if (lOffset + lFrameSize > aSize) [[unlikely]] {
+                        return Result::FRAME_SIZE_MISMATCH;
+                    }
+                    lLastResult = handleType2(apData + lOffset, lFrameSize, aSourceId);
+                    break;
+                }
+                case FrameType::TYPE3: {
+                    if (lOffset + sizeof(FrameType3) > aSize) [[unlikely]] {
+                        return Result::FRAME_SIZE_MISMATCH;
+                    }
+                    // Type3 size is remaining after header, similar to Type1
+                    auto lRemainingSize = aSize - lOffset;
+                    auto lRemainingFrames = lpHeader->mFrameCount - lI;
+                    if (lRemainingFrames > 1) {
+                        lFrameSize = lRemainingSize / lRemainingFrames;
+                    } else {
+                        lFrameSize = lRemainingSize;
+                    }
+                    lLastResult = handleType3(apData + lOffset, lFrameSize, aSourceId);
+                    break;
+                }
+                default:
+                    return Result::INVALID_PARAMETER;
+            }
+
+            if (lLastResult != Result::OK && lLastResult != Result::DUPLICATE_FRAGMENT) [[unlikely]] {
+                return lLastResult;
+            }
+
+            lOffset += lFrameSize;
+        }
+
+        return Result::OK;
+    }
+
     void deliverFrame(Bucket* apBucket) {
         apBucket->mpFrame->mPayloadType = apBucket->mPayloadType;
         apBucket->mpFrame->mPayloadCode = apBucket->mPayloadCode;
@@ -861,6 +1569,13 @@ private:
         apBucket->mpFrame->mFlags = apBucket->mFlags;
         apBucket->mpFrame->mSuperFrameNo = apBucket->mSavedFrameNo;
         apBucket->mpFrame->mBroken = (apBucket->mFragmentCount != apBucket->mOfFragmentNo + 1);
+
+        // Update statistics
+        if (apBucket->mpFrame->mBroken) {
+            mStatistics.mBrokenFrames++;
+        } else {
+            mStatistics.mCompleteFrames++;
+        }
 
         if (mMode == ReceiverMode::THREADED) [[likely]] {
             std::lock_guard<std::mutex> lLock(mDeliveryMutex);
@@ -878,18 +1593,35 @@ private:
 
     void processTimeouts() {
         auto lNow = nowUs();
+
+        // First, process NACKs for incomplete buckets
+        processNacks();
+
         std::vector<Bucket*> lToDeliver;
         lToDeliver.reserve(16);  // Preallocate for typical case
 
+        // First pass: identify complete, timed-out, and HOL-timed-out buckets
         for (auto& [lOrder, lpBucket] : mBucketMap) {
-            // Total fragments = ofFragmentNo + 1 (since ofFragmentNo is 0-based index of last fragment)
             auto lComplete = (lpBucket->mFragmentCount == lpBucket->mOfFragmentNo + 1);
             auto lTimedOut = (lpBucket->mTimeoutUs <= lNow);
 
-            if (lComplete || lTimedOut) [[unlikely]] {
+            if (lComplete || lTimedOut) {
                 lToDeliver.push_back(lpBucket);
+            } else if (mHolTimeoutMs > 0) {
+                // HOL timeout: deliver incomplete frames that have been waiting too long
+                auto lHolTimeoutUs = (int64_t)(mHolTimeoutMs) * 1000;
+                auto lElapsedUs = lNow - lpBucket->mFirstArrivalUs;
+                if (lElapsedUs >= lHolTimeoutUs) {
+                    lToDeliver.push_back(lpBucket);
+                }
             }
         }
+
+        // Sort by delivery order to maintain sequence
+        std::sort(lToDeliver.begin(), lToDeliver.end(),
+                  [](const Bucket* apA, const Bucket* apB) {
+                      return apA->mDeliveryOrder < apB->mDeliveryOrder;
+                  });
 
         for (auto* lpBucket : lToDeliver) {
             deliverFrame(lpBucket);
@@ -936,18 +1668,26 @@ private:
     }
 
     [[no_unique_address]] ReceiveCallbackT mCallback;
+    [[no_unique_address]] NackCallbackT mNackCallback;
     uint32_t mTimeoutMs;
     uint32_t mHolTimeoutMs;
+    uint8_t mMaxNackRetries;
+    uint32_t mNackIntervalMs;
     ReceiverMode mMode;
 
     Bucket* mpBuckets;
     std::map<uint64_t, Bucket*> mBucketMap;
     Stream mStreams[256];  // All 256 stream IDs (0-255)
-    std::recursive_mutex mNetMutex;
+    mutable std::recursive_mutex mNetMutex;
 
     uint16_t mOldFrameNo = 0;
     uint64_t mFrameNoRecalc = 0;
     bool mFirstFrame = true;
+
+    // Jitter tracking for adaptive NACK timing
+    int64_t mJitterUs = 10000;      // Smoothed jitter estimate (start at 10ms)
+    int64_t mLastArrivalUs = 0;     // Previous fragment arrival time
+    int64_t mExpectedIntervalUs = 0; // Expected inter-arrival time
 
     std::atomic<bool> mRunning{false};
     std::jthread mWorkerThread;
@@ -957,21 +1697,27 @@ private:
     std::deque<SuperFramePtr> mDeliveryQueue;
     std::condition_variable mDeliveryCondition;
     bool mDeliveryReady = false;
+
+    ReceiverStatistics mStatistics;
 };
 
 // Deduction guide for Receiver
-template<typename ReceiveCallbackT>
-Receiver(ReceiveCallbackT, uint32_t = 100, uint32_t = 0, ReceiverMode = ReceiverMode::THREADED)
-    -> Receiver<ReceiveCallbackT>;
+template<typename ReceiveCallbackT, typename NackCallbackT>
+Receiver(ReceiveCallbackT, NackCallbackT, uint32_t = 100, uint32_t = 0, uint8_t = 3, uint32_t = 0, ReceiverMode = ReceiverMode::THREADED)
+    -> Receiver<ReceiveCallbackT, NackCallbackT>;
 
 // Factory function for easier instantiation
-template<typename ReceiveCallbackT, uint16_t BUFFER_SIZE = DEFAULT_BUFFER_SIZE>
-    requires ReceiveCallbackConcept<ReceiveCallbackT>
-[[nodiscard]] auto makeReceiver(ReceiveCallbackT aCallback, uint32_t aTimeoutMs = 100,
+template<typename ReceiveCallbackT, typename NackCallbackT, uint16_t BUFFER_SIZE = DEFAULT_BUFFER_SIZE>
+    requires ReceiveCallbackConcept<ReceiveCallbackT> && NackCallbackConcept<NackCallbackT>
+[[nodiscard]] auto makeReceiver(ReceiveCallbackT aCallback, NackCallbackT aNackCallback,
+                                 uint32_t aTimeoutMs = 100,
                                  uint32_t aHolTimeoutMs = 0,
+                                 uint8_t aMaxNackRetries = 3,
+                                 uint32_t aNackIntervalMs = 0,
                                  ReceiverMode aMode = ReceiverMode::THREADED) {
-    return Receiver<ReceiveCallbackT, BUFFER_SIZE>(std::move(aCallback), aTimeoutMs,
-                                                    aHolTimeoutMs, aMode);
+    return Receiver<ReceiveCallbackT, NackCallbackT, BUFFER_SIZE>(
+        std::move(aCallback), std::move(aNackCallback),
+        aTimeoutMs, aHolTimeoutMs, aMaxNackRetries, aNackIntervalMs, aMode);
 }
 
 } // namespace efp

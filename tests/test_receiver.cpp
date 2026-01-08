@@ -36,7 +36,7 @@ TEST_SUITE("Receiver") {
         auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
             lCapturedFrame = std::move(apFrame);
             lReceived = true;
-        }, 100, 0);
+        }, [](std::span<const uint8_t>) {}, 100, 0);
 
         auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
             (void)lReceiver.receive(aData, 0);
@@ -71,7 +71,7 @@ TEST_SUITE("Receiver") {
         auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
             lCapturedFrame = std::move(apFrame);
             lReceived = true;
-        }, 100, 0);
+        }, [](std::span<const uint8_t>) {}, 100, 0);
 
         auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
             (void)lReceiver.receive(aData, 0);
@@ -105,7 +105,7 @@ TEST_SUITE("Receiver") {
         auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
             lCapturedFrame = std::move(apFrame);
             lReceived = true;
-        }, 100, 0);
+        }, [](std::span<const uint8_t>) {}, 100, 0);
 
         // Collect fragments first, then send in reverse order
         std::vector<std::vector<uint8_t>> lFragments;
@@ -140,7 +140,9 @@ TEST_SUITE("Receiver") {
 
     TEST_CASE("Duplicate fragments are detected") {
         // Use RunToCompletion mode so frames aren't delivered by background thread
-        auto lReceiver = efp::makeReceiver([](efp::SuperFramePtr) {}, 100, 0,
+        auto lReceiver = efp::makeReceiver([](efp::SuperFramePtr) {},
+                                            [](std::span<const uint8_t>) {},
+                                            100, 0, 3, 0,
                                             efp::ReceiverMode::RUN_TO_COMPLETION);
 
         std::vector<std::vector<uint8_t>> lFragments;
@@ -171,7 +173,7 @@ TEST_SUITE("Receiver") {
         auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
             lCapturedFrame = std::move(apFrame);
             lReceived = true;
-        }, 50, 0);  // 50ms timeout
+        }, [](std::span<const uint8_t>) {}, 50, 0);  // 50ms timeout
 
         // Collect fragments but only send some
         std::vector<std::vector<uint8_t>> lFragments;
@@ -203,7 +205,7 @@ TEST_SUITE("Receiver") {
         auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
             lCapturedSourceId = apFrame->mSourceId;
             lReceived = true;
-        }, 100, 0);
+        }, [](std::span<const uint8_t>) {}, 100, 0);
 
         auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
             (void)lReceiver.receive(aData, 123);  // Source ID = 123
@@ -223,7 +225,7 @@ TEST_SUITE("Receiver") {
         auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
             lCapturedFrame = std::move(apFrame);
             lReceived = true;
-        }, 100, 0, efp::ReceiverMode::RUN_TO_COMPLETION);
+        }, [](std::span<const uint8_t>) {}, 100, 0, 3, 0, efp::ReceiverMode::RUN_TO_COMPLETION);
 
         auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
             (void)lReceiver.receive(aData, 0);

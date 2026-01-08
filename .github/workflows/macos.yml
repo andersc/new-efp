@@ -1,0 +1,35 @@
+name: macOS Build
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master, develop ]
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    strategy:
+      matrix:
+        build_type: [Debug, Release]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure CMake
+        run: |
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -DEFP_BUILD_TESTS=ON \
+            -DEFP_BUILD_EXAMPLES=ON \
+            -DEFP_BUILD_C_API=ON
+
+      - name: Build
+        run: cmake --build build --config ${{ matrix.build_type }} -j $(sysctl -n hw.ncpu)
+
+      - name: Run tests
+        working-directory: build
+        run: ctest --output-on-failure -C ${{ matrix.build_type }}
+

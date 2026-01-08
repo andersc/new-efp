@@ -1,0 +1,51 @@
+name: Linux Build
+        run: ctest --output-on-failure -C ${{ matrix.build_type }}
+        working-directory: build
+      - name: Run tests
+
+        run: cmake --build build --config ${{ matrix.build_type }} -j $(nproc)
+      - name: Build
+
+            -DEFP_BUILD_C_API=ON
+            -DEFP_BUILD_EXAMPLES=ON \
+            -DEFP_BUILD_TESTS=ON \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+          cmake -B build \
+        run: |
+          CXX: ${{ matrix.cxx }}
+          CC: ${{ matrix.cc }}
+        env:
+      - name: Configure CMake
+
+          sudo apt-get install -y cmake build-essential
+          sudo apt-get update
+        run: |
+      - name: Install dependencies
+
+        uses: actions/checkout@v4
+      - name: Checkout
+    steps:
+
+            cxx: clang++
+            cc: clang
+          - compiler: clang
+            cxx: g++
+            cc: gcc
+          - compiler: gcc
+        include:
+        build_type: [Debug, Release]
+        compiler: [gcc, clang]
+      matrix:
+    strategy:
+
+    runs-on: ubuntu-latest
+  build:
+jobs:
+
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master, develop ]
+  push:
+on:
+
+

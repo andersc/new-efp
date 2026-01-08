@@ -51,7 +51,7 @@ TEST_SUITE("Stress Tests") {
             CHECK(!apFrame->mBroken);
             CHECK(apFrame->mSize == FRAME_SIZE);
             lDataReceived++;
-        }, 50, 20, efp::ReceiverMode::RUN_TO_COMPLETION);
+        }, [](std::span<const uint8_t>) {}, 50, 20, 3, 0, efp::ReceiverMode::RUN_TO_COMPLETION);
 
         auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
             auto lResult = lReceiver.receive(aData, 0);
@@ -85,7 +85,7 @@ TEST_SUITE("Stress Tests") {
             if (!apFrame->mBroken) {
                 lDataReceived++;
             }
-        }, 50, 0, efp::ReceiverMode::RUN_TO_COMPLETION);
+        }, [](std::span<const uint8_t>) {}, 50, 0, 3, 0, efp::ReceiverMode::RUN_TO_COMPLETION);
 
         auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
             (void)lReceiver.receive(aData, 0);
@@ -121,7 +121,7 @@ TEST_SUITE("Stress Tests") {
             }
 
             lDataReceived++;
-        }, 100, 40);
+        }, [](std::span<const uint8_t>) {}, 100, 40);
 
         auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
             auto lResult = lReceiver.receive(aData, 0);
@@ -160,7 +160,7 @@ TEST_SUITE("Stress Tests") {
         auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
             CHECK(!apFrame->mBroken);
             lReceivedByStream[apFrame->mStreamId]++;
-        }, 100, 0);
+        }, [](std::span<const uint8_t>) {}, 100, 0);
 
         auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
             (void)lReceiver.receive(aData, 0);
@@ -197,7 +197,7 @@ TEST_SUITE("Stress Tests") {
             if (!apFrame->mBroken) {
                 lDataReceived++;
             }
-        }, 50, 0, efp::ReceiverMode::RUN_TO_COMPLETION);
+        }, [](std::span<const uint8_t>) {}, 50, 0, 3, 0, efp::ReceiverMode::RUN_TO_COMPLETION);
 
         auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
             (void)lReceiver.receive(aData, 0);
@@ -227,7 +227,7 @@ TEST_SUITE("Stress Tests") {
             std::lock_guard<std::mutex> lLock(lFrameMutex);
             lCapturedFrame = std::move(apFrame);
             lReceived = true;
-        }, 500, 0);
+        }, [](std::span<const uint8_t>) {}, 500, 0);
 
         auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
             (void)lReceiver.receive(aData, 0);
@@ -268,13 +268,13 @@ TEST_SUITE("Stress Tests") {
 
         auto lReceiver1 = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
             if (!apFrame->mBroken) lReceived1++;
-        }, 100, 0);
+        }, [](std::span<const uint8_t>) {}, 100, 0);
         auto lReceiver2 = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
             if (!apFrame->mBroken) lReceived2++;
-        }, 100, 0);
+        }, [](std::span<const uint8_t>) {}, 100, 0);
         auto lReceiver3 = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
             if (!apFrame->mBroken) lReceived3++;
-        }, 100, 0);
+        }, [](std::span<const uint8_t>) {}, 100, 0);
 
         auto lSender1 = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
             (void)lReceiver1.receive(aData, 1);
@@ -327,7 +327,7 @@ TEST_SUITE("Stress Tests") {
 
             auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
                 if (!apFrame->mBroken) lReceived++;
-            }, 50, 0);
+            }, [](std::span<const uint8_t>) {}, 50, 0);
 
             auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
                 (void)lReceiver.receive(aData, 0);
@@ -352,7 +352,7 @@ TEST_SUITE("Stress Tests") {
 
         auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
             if (!apFrame->mBroken) lReceived++;
-        }, 100, 0);
+        }, [](std::span<const uint8_t>) {}, 100, 0);
 
         auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
             (void)lReceiver.receive(aData, 0);

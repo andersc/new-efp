@@ -64,7 +64,7 @@ TEST_SUITE("Basic Functionality") {
             CHECK(apFrame->mPayloadType == 0x02);
             CHECK(apFrame->mSize == FRAME_SIZE);
             lDataReceived = true;
-        }, 50, 20);
+        }, [](std::span<const uint8_t>) {}, 50, 20);
 
         auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
             auto lResult = lReceiver.receive(aData, 0);
@@ -97,7 +97,7 @@ TEST_SUITE("Basic Functionality") {
             CHECK(apFrame->mSize == FRAME_SIZE);
             CHECK(apFrame->mpData[0] == 0xaa);
             lDataReceived = true;
-        }, 50, 20);
+        }, [](std::span<const uint8_t>) {}, 50, 20);
 
         auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
             auto lResult = lReceiver.receive(aData, 0);
@@ -129,7 +129,7 @@ TEST_SUITE("Basic Functionality") {
             CHECK(!apFrame->mBroken);
             CHECK(apFrame->mSize == FRAME_SIZE);
             lDataReceived = true;
-        }, 50, 20);
+        }, [](std::span<const uint8_t>) {}, 50, 20);
 
         auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
             if (lPacketNumber == 0) {
@@ -177,7 +177,7 @@ TEST_SUITE("Basic Functionality") {
                 CHECK(apFrame->mpData[lX] == lVectorChecker++);
             }
             lDataReceived = true;
-        }, 50, 20);
+        }, [](std::span<const uint8_t>) {}, 50, 20);
 
         auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
             auto lResult = lReceiver.receive(aData, 0);
@@ -207,7 +207,7 @@ TEST_SUITE("Basic Functionality") {
             std::lock_guard<std::mutex> lLock(lMutex);
             lLastPayloadType = apFrame->mPayloadType;
             lReceived++;
-        }, 100, 0);
+        }, [](std::span<const uint8_t>) {}, 100, 0);
 
         auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
             (void)lReceiver.receive(aData, 0);
@@ -235,7 +235,7 @@ TEST_SUITE("Basic Functionality") {
             std::lock_guard<std::mutex> lLock(lMutex);
             lReceivedStreams.insert(apFrame->mStreamId);
             lReceived++;
-        }, 100, 0);
+        }, [](std::span<const uint8_t>) {}, 100, 0);
 
         auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
             (void)lReceiver.receive(aData, 0);
@@ -264,7 +264,7 @@ TEST_SUITE("Basic Functionality") {
         auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
             lCapturedCode = apFrame->mPayloadCode;
             lReceived = true;
-        }, 100, 0);
+        }, [](std::span<const uint8_t>) {}, 100, 0);
 
         auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
             (void)lReceiver.receive(aData, 0);
@@ -292,7 +292,7 @@ TEST_SUITE("Basic Functionality") {
             CHECK(apFrame->mPayloadType == efp::media::PayloadType::H264);
             CHECK(apFrame->mPayloadCode == efp::media::PayloadCode::ANXB);
             lReceived = true;
-        }, 100, 0);
+        }, [](std::span<const uint8_t>) {}, 100, 0);
 
         auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
             (void)lReceiver.receive(aData, 0);
@@ -320,7 +320,7 @@ TEST_SUITE("Basic Functionality") {
                 CHECK(apFrame->mPts == 1000);
                 CHECK(apFrame->mDts == 1000);
                 lReceived = true;
-            }, 100, 0);
+            }, [](std::span<const uint8_t>) {}, 100, 0);
 
             auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
                 (void)lReceiver.receive(aData, 0);
@@ -339,7 +339,7 @@ TEST_SUITE("Basic Functionality") {
                 CHECK(apFrame->mPts == 2000);
                 CHECK(apFrame->mDts == 1000);
                 lReceived = true;
-            }, 100, 0);
+            }, [](std::span<const uint8_t>) {}, 100, 0);
 
             auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
                 (void)lReceiver.receive(aData, 0);
@@ -358,7 +358,7 @@ TEST_SUITE("Basic Functionality") {
                 CHECK(apFrame->mPts == 1000);
                 CHECK(apFrame->mDts == UINT64_MAX);
                 lReceived = true;
-            }, 100, 0);
+            }, [](std::span<const uint8_t>) {}, 100, 0);
 
             auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
                 (void)lReceiver.receive(aData, 0);
@@ -391,7 +391,7 @@ TEST_SUITE("Basic Functionality") {
         auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
             CHECK(apFrame->mFlags == efp::Flags::INLINE_PAYLOAD);
             lReceived = true;
-        }, 100, 0);
+        }, [](std::span<const uint8_t>) {}, 100, 0);
 
         auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
             (void)lReceiver.receive(aData, 0);
@@ -412,7 +412,7 @@ TEST_SUITE("Basic Functionality") {
         auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
             CHECK(apFrame->mSourceId == 42);
             lReceived = true;
-        }, 100, 0);
+        }, [](std::span<const uint8_t>) {}, 100, 0);
 
         auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
             (void)lReceiver.receive(aData, 42);  // Pass source ID
@@ -436,7 +436,7 @@ TEST_SUITE("Basic Functionality") {
                 lCapturedSize = apFrame->mSize;
                 CHECK(!apFrame->mBroken);
                 lReceived = true;
-            }, 100, 0);
+            }, [](std::span<const uint8_t>) {}, 100, 0);
 
             auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
                 (void)lReceiver.receive(aData, 0);
@@ -457,7 +457,7 @@ TEST_SUITE("Basic Functionality") {
             auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
                 CHECK(!apFrame->mBroken);
                 lReceived = true;
-            }, 100, 0);
+            }, [](std::span<const uint8_t>) {}, 100, 0);
 
             auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
                 lFragmentCount++;

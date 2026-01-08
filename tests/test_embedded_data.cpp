@@ -90,7 +90,7 @@ TEST_SUITE("Embedded Data") {
             }
 
             lReceived = true;
-        }, 100, 0);
+        }, [](std::span<const uint8_t>) {}, 100, 0);
 
         auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
             (void)lReceiver.receive(aData, 0);
@@ -114,7 +114,7 @@ TEST_SUITE("Embedded Data") {
             CHECK(!apFrame->mBroken);
             CHECK(apFrame->mFlags == efp::Flags::INLINE_PAYLOAD);
             lReceived = true;
-        }, 100, 0);
+        }, [](std::span<const uint8_t>) {}, 100, 0);
 
         auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
             (void)lReceiver.receive(aData, 0);
@@ -140,7 +140,7 @@ TEST_SUITE("Embedded Data") {
             CHECK(!apFrame->mBroken);
             CHECK(apFrame->mFlags == efp::Flags::INLINE_PAYLOAD);
             lReceivedCount++;
-        }, 100, 0);
+        }, [](std::span<const uint8_t>) {}, 100, 0);
 
         auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
             (void)lReceiver.receive(aData, 0);

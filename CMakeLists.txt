@@ -70,6 +70,8 @@ if(EFP_BUILD_TESTS)
         tests/test_packet_loss.cpp
         tests/test_lifecycle.cpp
         tests/test_embedded_data.cpp
+        tests/test_bundle.cpp
+        tests/test_nack.cpp
     )
 
     target_link_libraries(efp_tests PRIVATE

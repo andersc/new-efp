@@ -38,13 +38,20 @@ struct ReceiveCallbackWrapper {
     void operator()(efp::SuperFramePtr apFrame) const;
 };
 
+// Wrapper for NACK callback - stores function pointer + context
+struct NackCallbackWrapper {
+    efp_receiver_s* mpReceiver = nullptr;
+
+    void operator()(std::span<const uint8_t> aData) const;
+};
+
 //------------------------------------------------------------------------------
 // Internal structures using template instantiations
 //------------------------------------------------------------------------------
 
 // Type aliases for the concrete sender/receiver types
 using CSender = efp::Sender<SendCallbackWrapper>;
-using CReceiver = efp::Receiver<ReceiveCallbackWrapper>;
+using CReceiver = efp::Receiver<ReceiveCallbackWrapper, NackCallbackWrapper>;
 
 struct efp_sender_s {
     std::unique_ptr<CSender> mpSender;
@@ -56,8 +63,18 @@ struct efp_receiver_s {
     std::unique_ptr<CReceiver> mpReceiver;
     efp_receive_callback_t mCallback = nullptr;
     efp_embedded_callback_t mEmbeddedCallback = nullptr;
+    efp_send_callback_t mNackCallback = nullptr;  // Reuse send callback type for NACK
     void* mpCtx = nullptr;
 };
+
+// Implementation of NackCallbackWrapper::operator() (needs efp_receiver_s definition)
+void NackCallbackWrapper::operator()(std::span<const uint8_t> aData) const {
+    if (!mpReceiver || !mpReceiver->mNackCallback) {
+        return;
+    }
+    // Use stream ID 0 for NACK messages
+    mpReceiver->mNackCallback(aData.data(), aData.size(), 0, mpReceiver->mpCtx);
+}
 
 // Implementation of ReceiveCallbackWrapper::operator() (needs efp_receiver_s definition)
 void ReceiveCallbackWrapper::operator()(efp::SuperFramePtr apFrame) const {
@@ -223,7 +240,9 @@ efp_receiver_t efp_receiver_create(uint32_t aTimeoutMs, uint32_t aHolTimeoutMs, 
 
         // Create receiver with wrapper that references this receiver struct
         ReceiveCallbackWrapper lWrapper{lpReceiver};
-        lpReceiver->mpReceiver = std::make_unique<CReceiver>(lWrapper, aTimeoutMs, aHolTimeoutMs, lRecvMode);
+        NackCallbackWrapper lNackWrapper{lpReceiver};
+        lpReceiver->mpReceiver = std::make_unique<CReceiver>(lWrapper, lNackWrapper, aTimeoutMs, aHolTimeoutMs,
+                                                              3, 0, lRecvMode);
         return lpReceiver;
     } catch (...) {
         return nullptr;
@@ -242,7 +261,9 @@ efp_receiver_t efp_receiver_create_with_callback(uint32_t aTimeoutMs, uint32_t a
             : efp::ReceiverMode::THREADED;
 
         ReceiveCallbackWrapper lWrapper{lpReceiver};
-        lpReceiver->mpReceiver = std::make_unique<CReceiver>(lWrapper, aTimeoutMs, aHolTimeoutMs, lRecvMode);
+        NackCallbackWrapper lNackWrapper{lpReceiver};
+        lpReceiver->mpReceiver = std::make_unique<CReceiver>(lWrapper, lNackWrapper, aTimeoutMs, aHolTimeoutMs,
+                                                              3, 0, lRecvMode);
         return lpReceiver;
     } catch (...) {
         return nullptr;

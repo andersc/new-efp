@@ -55,7 +55,7 @@ TEST_SUITE("Lifecycle") {
                 }
 
                 lDataReceived++;
-            }, 50, 20);
+            }, [](std::span<const uint8_t>) {}, 50, 20);
 
             auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
                 (void)lReceiver.receive(aData, 0);
@@ -92,7 +92,7 @@ TEST_SUITE("Lifecycle") {
                 }
 
                 lDataReceived++;
-            }, 50, 20);
+            }, [](std::span<const uint8_t>) {}, 50, 20);
 
             auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
                 (void)lReceiver.receive(aData, 0);
@@ -131,7 +131,7 @@ TEST_SUITE("Lifecycle") {
             CHECK(!apFrame->mBroken);
             CHECK(apFrame->mSize == FRAME_SIZE);
             lDataReceived++;
-        }, 50, 20, efp::ReceiverMode::RUN_TO_COMPLETION);
+        }, [](std::span<const uint8_t>) {}, 50, 20, 3, 0, efp::ReceiverMode::RUN_TO_COMPLETION);
 
         auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
             auto lResult = lReceiver.receive(aData, 0);
@@ -159,7 +159,7 @@ TEST_SUITE("Lifecycle") {
             auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
                 CHECK(!apFrame->mBroken);
                 lReceived = true;
-            }, 100, 0);
+            }, [](std::span<const uint8_t>) {}, 100, 0);
 
             auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
                 (void)lReceiver.receive(aData, 0);
@@ -177,7 +177,7 @@ TEST_SUITE("Lifecycle") {
             auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
                 CHECK(!apFrame->mBroken);
                 lReceived++;
-            }, 100, 0);
+            }, [](std::span<const uint8_t>) {}, 100, 0);
 
             auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
                 (void)lReceiver.receive(aData, 0);
@@ -201,7 +201,7 @@ TEST_SUITE("Lifecycle") {
 
         auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
             if (!apFrame->mBroken) lReceived++;
-        }, 100, 0);
+        }, [](std::span<const uint8_t>) {}, 100, 0);
 
         auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
             std::lock_guard<std::mutex> lLock(lReceiverMutex);
@@ -242,7 +242,7 @@ TEST_SUITE("Lifecycle") {
 
             auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr) {
                 lReceived++;
-            }, 50, 0);
+            }, [](std::span<const uint8_t>) {}, 50, 0);
 
             auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
                 if (lReceiverActive.load()) {
@@ -278,7 +278,7 @@ TEST_SUITE("Lifecycle") {
     // Receiver stop is idempotent
     // =========================================================================
     TEST_CASE("Receiver stop is idempotent") {
-        auto lReceiver = efp::makeReceiver([](efp::SuperFramePtr) {}, 100, 0);
+        auto lReceiver = efp::makeReceiver([](efp::SuperFramePtr) {}, [](std::span<const uint8_t>) {}, 100, 0);
 
         lReceiver.stop();
         lReceiver.stop();
@@ -295,7 +295,7 @@ TEST_SUITE("Lifecycle") {
 
         auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr) {
             lReceived++;
-        }, 100, 0);
+        }, [](std::span<const uint8_t>) {}, 100, 0);
 
         auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
             (void)lReceiver.receive(aData, 0);
@@ -321,7 +321,7 @@ TEST_SUITE("Lifecycle") {
         auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
             CHECK(!apFrame->mBroken);
             lReceived++;
-        }, 100, 0, efp::ReceiverMode::RUN_TO_COMPLETION);
+        }, [](std::span<const uint8_t>) {}, 100, 0, 3, 0, efp::ReceiverMode::RUN_TO_COMPLETION);
 
         auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
             (void)lReceiver.receive(aData, 0);

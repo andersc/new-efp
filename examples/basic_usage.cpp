@@ -30,6 +30,8 @@ int main() {
                       << ", pts=" << apFrame->mPts
                       << ", broken=" << apFrame->mBroken
                       << "\n";
+        }, [](std::span<const uint8_t>) {
+            // NACK callback - not used in this simple example
         }, 100, 0);
 
         auto lSender = efp::makeSender(MTU, [&lReceiver](std::span<const uint8_t> aData, uint8_t) {
@@ -58,6 +60,8 @@ int main() {
                       << "size=" << apFrame->mSize
                       << ", broken=" << apFrame->mBroken
                       << "\n";
+        }, [](std::span<const uint8_t>) {
+            // NACK callback - not used in this example
         }, 100, 0);
 
         auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
@@ -88,6 +92,8 @@ int main() {
                       << ", format=" << lpFormat
                       << ", pts=" << apFrame->mPts
                       << "\n";
+        }, [](std::span<const uint8_t>) {
+            // NACK callback - not used in this example
         }, 100, 0);
 
         auto lSender = efp::makeSender(MTU, [&lReceiver](std::span<const uint8_t> aData, uint8_t) {
@@ -120,6 +126,8 @@ int main() {
                       << "size=" << apFrame->mSize
                       << ", type=0x" << std::hex << (int)apFrame->mPayloadType << std::dec
                       << "\n";
+        }, [](std::span<const uint8_t>) {
+            // NACK callback - not used in this example
         }, 100, 0);
 
         auto lSender = efp::makeSender(MTU, [&lReceiver](std::span<const uint8_t> aData, uint8_t) {
@@ -155,7 +163,9 @@ int main() {
         auto lReceiver = efp::makeReceiver([&lReceived](efp::SuperFramePtr apFrame) {
             std::cout << "Run-to-completion received: size=" << apFrame->mSize << "\n";
             lReceived = true;
-        }, 100, 0, efp::ReceiverMode::RUN_TO_COMPLETION);
+        }, [](std::span<const uint8_t>) {
+            // NACK callback - not used in this example
+        }, 100, 0, 3, 0, efp::ReceiverMode::RUN_TO_COMPLETION);
 
         auto lSender = efp::makeSender(MTU, [&lReceiver](std::span<const uint8_t> aData, uint8_t) {
             (void)lReceiver.receive(aData, 0);
@@ -179,6 +189,8 @@ int main() {
         // For simplicity, this example uses default buffer size
         auto lReceiver = efp::makeReceiver([](efp::SuperFramePtr apFrame) {
             std::cout << "Custom buffer receiver got frame: size=" << apFrame->mSize << "\n";
+        }, [](std::span<const uint8_t>) {
+            // NACK callback - not used in this example
         }, 100, 0);
 
         auto lSender = efp::makeSender(1400, [&lReceiver](std::span<const uint8_t> aData, uint8_t) {

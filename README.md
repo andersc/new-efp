@@ -1,5 +1,9 @@
 # Elastic Frame Protocol (EFP)
 
+[![Linux Build](https://github.com/yourorg/efp/actions/workflows/linux.yml/badge.svg)](https://github.com/yourorg/efp/actions/workflows/linux.yml)
+[![macOS Build](https://github.com/yourorg/efp/actions/workflows/macos.yml/badge.svg)](https://github.com/yourorg/efp/actions/workflows/macos.yml)
+[![Windows Build](https://github.com/yourorg/efp/actions/workflows/windows.yml/badge.svg)](https://github.com/yourorg/efp/actions/workflows/windows.yml)
+
 A lightweight, header-only C++20 library for fragmenting and reassembling data over unreliable or size-limited transport layers.
 
 ```
@@ -97,42 +101,109 @@ Copy `efp.h`, `efp_internal.h`, and optionally `efp_media_types.h` to your proje
 // Template-based Sender with compile-time callback type deduction
 template<typename SendCallbackT, uint16_t BUFFER_SIZE = 8191>
 class Sender {
-    explicit Sender(uint16_t aMtu, SendCallbackT aCallback);
+    explicit Sender(uint16_t aMtu, SendCallbackT aCallback,
+                    SubFragmentMode aSubFragmentMode = SubFragmentMode::SINGLE,
+                    uint32_t aRetentionMs = 0,
+                    size_t aRetentionMaxBytes = 50 * 1024 * 1024);
 
     Result send(std::span<const uint8_t> aData,
                 uint8_t aPayloadType, uint64_t aPts, uint64_t aDts,
                 uint32_t aPayloadCode, uint8_t aStreamId,
                 uint8_t aFlags = Flags::NONE);
+
+    Result receiveNack(std::span<const uint8_t> aData);  // Process NACK for retransmit
+    SenderStatistics getStatistics() const;
+};
+
+// Sub-fragment modes for bundled transmission
+enum class SubFragmentMode : uint8_t {
+    SINGLE  = 1,  // Normal mode: 1 fragment per UDP packet (default)
+    HALF    = 2,  // 2 fragments per UDP packet
+    QUARTER = 4,  // 4 fragments per UDP packet
+    EIGHTH  = 8   // 8 fragments per UDP packet
 };
 
 // Factory function (recommended)
 auto lSender = efp::makeSender(mtu, [](std::span<const uint8_t> data, uint8_t stream) {
     // Send callback
 });
+
+// With sub-fragmentation and retention for retransmit support
+auto lSender = efp::makeSender(mtu, callback,
+    efp::SubFragmentMode::QUARTER,  // Bundle 4 fragments per UDP packet
+    1000,                           // 1 second retention for retransmit
+    50 * 1024 * 1024);              // 50MB max retention buffer
 ```
 
 ### Receiver
 
 ```cpp
 // Template-based Receiver with compile-time callback type deduction
-template<typename ReceiveCallbackT, uint16_t BUFFER_SIZE = 8191>
+template<typename ReceiveCallbackT, typename NackCallbackT, uint16_t BUFFER_SIZE = 8191>
 class Receiver {
     explicit Receiver(ReceiveCallbackT aCallback,
+                      NackCallbackT aNackCallback,
                       uint32_t aTimeoutMs = 100,
                       uint32_t aHolTimeoutMs = 0,
+                      uint8_t aMaxNackRetries = 3,
+                      uint32_t aNackIntervalMs = 0,  // 0 = adaptive
                       ReceiverMode aMode = ReceiverMode::THREADED);
 
     Result receive(std::span<const uint8_t> aData, uint8_t aSourceId = 0);
 
     void poll();  // For RUN_TO_COMPLETION mode
     void stop();
+    ReceiverStatistics getStatistics() const;
 };
 
 // Factory function (recommended)
-auto lReceiver = efp::makeReceiver([](efp::SuperFramePtr frame) {
-    // Receive callback
-}, 100);  // timeout in ms
+auto lReceiver = efp::makeReceiver(
+    [](efp::SuperFramePtr frame) {
+        // Receive callback - process complete/broken frames
+    },
+    [&lSender](std::span<const uint8_t> nackData) {
+        // NACK callback - send NACK back to sender
+        sendToSender(nackData);  // Your network send function
+        // Or directly: lSender.receiveNack(nackData);
+    },
+    100,  // Frame timeout in ms
+    50,   // HOL timeout in ms (0 = disabled)
+    3,    // Max NACK retries (0 = disabled)
+    0     // NACK interval (0 = adaptive based on jitter)
+);
 ```
+
+#### NACK and Retransmission
+
+The receiver automatically detects missing fragments and sends NACK (Negative Acknowledgment) messages to request retransmission:
+
+- **Adaptive timing**: By default (`aNackIntervalMs=0`), NACK timing adapts to network jitter
+- **Exponential backoff**: Each retry waits longer (delay doubles)
+- **Retry limit**: After `aMaxNackRetries` attempts, the frame is delivered as broken
+- **HOL blocking timeout**: If an older incomplete frame blocks newer complete frames, it's delivered after `aHolTimeoutMs`
+
+```cpp
+// Example: Full sender-receiver setup with NACK support
+auto lSender = efp::makeSender(1400, sendCallback,
+    efp::SubFragmentMode::SINGLE,
+    1000);  // 1 second retention for retransmit
+
+auto lReceiver = efp::makeReceiver(
+    receiveCallback,
+    [&lSender](std::span<const uint8_t> nackData) {
+        // Route NACK back to sender
+        lSender.receiveNack(nackData);
+    },
+    200,  // 200ms frame timeout
+    50,   // 50ms HOL timeout
+    3,    // 3 NACK retries
+    20    // 20ms fixed NACK interval (or 0 for adaptive)
+);
+```
+
+**Validation**: The receiver throws `std::invalid_argument` if:
+- `aHolTimeoutMs >= aTimeoutMs` (HOL must be less than frame timeout)
+- `aNackIntervalMs * aMaxNackRetries >= aTimeoutMs` (NACK budget must fit in timeout)
 
 ### SuperFrame (received data)
 
@@ -151,16 +222,45 @@ class SuperFrame {
 };
 ```
 
+### Statistics
+
+```cpp
+struct SenderStatistics {
+    uint64_t mRetentionBufferBytes;      // Current bytes in retention buffer
+    uint32_t mRetentionBufferFragments;  // Current fragments in retention buffer
+    uint64_t mFragmentsSent;             // Total fragments sent
+    uint64_t mBundlesSent;               // Total Type4 bundles sent
+    uint64_t mNacksReceived;             // Total NACKs received
+    uint64_t mRetransmittedFragments;    // Total fragments retransmitted
+    uint32_t mRetransmitQueueSize;       // Current retransmit queue depth
+    double   mFragmentsPerSecond;        // Recent send rate
+    double   mRetransmitsPerSecond;      // Recent retransmit rate
+};
+
+struct ReceiverStatistics {
+    uint64_t mFragmentsReceived;     // Total fragments received
+    uint64_t mBundlesReceived;       // Total Type4 bundles received
+    uint64_t mNacksSent;             // Total NACKs sent
+    uint64_t mCompleteFrames;        // Total complete SuperFrames delivered
+    uint64_t mBrokenFrames;          // Total broken SuperFrames delivered
+    uint64_t mDuplicateFragments;    // Duplicate fragments received
+    uint32_t mPendingBuckets;        // Current active buckets
+    double   mFragmentsPerSecond;    // Recent receive rate
+    double   mNacksPerSecond;        // Recent NACK rate
+};
+```
+
 ## Protocol Format
 
-EFP uses 4 frame types optimized for different scenarios:
+EFP uses 5 frame types optimized for different scenarios:
 
 | Type | Size | Purpose |
 |------|------|---------|
-| Type0 | 1B | Signaling (reserved) |
+| Type0 | 3B+ | Signaling (NACK, etc.) |
 | Type1 | 8B | Fragment header |
 | Type2 | 27B | Final fragment with metadata |
 | Type3 | 8B | Penultimate overflow fragment |
+| Type4 | 2B | Bundle wrapper (contains multiple Type1/2/3) |
 
 ### Frame Structure
 

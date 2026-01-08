@@ -54,7 +54,7 @@ TEST_SUITE("Fragment Ordering") {
                 CHECK(apFrame->mpData[lX] == lVectorChecker++);
             }
             lDataReceived = true;
-        }, 50, 20);
+        }, [](std::span<const uint8_t>) {}, 50, 20);
 
         auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t aStreamId) {
             CHECK(aStreamId == 8);
@@ -108,7 +108,7 @@ TEST_SUITE("Fragment Ordering") {
                 CHECK(apFrame->mpData[lX] == lVectorChecker++);
             }
             lDataReceived = true;
-        }, 50, 20);
+        }, [](std::span<const uint8_t>) {}, 50, 20);
 
         auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
             std::vector<uint8_t> lPacket(aData.begin(), aData.end());
@@ -163,7 +163,7 @@ TEST_SUITE("Fragment Ordering") {
             CHECK(apFrame->mSize == FRAME_SIZE);
 
             lDataReceived++;
-        }, 50, 20);
+        }, [](std::span<const uint8_t>) {}, 50, 20);
 
         auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
             std::vector<uint8_t> lPacket(aData.begin(), aData.end());
@@ -211,7 +211,7 @@ TEST_SUITE("Fragment Ordering") {
                 CHECK(apFrame->mpData[lX] == lVectorChecker++);
             }
             lDataReceived = true;
-        }, 100, 0);
+        }, [](std::span<const uint8_t>) {}, 100, 0);
 
         auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
             lAllFragments.emplace_back(aData.begin(), aData.end());
@@ -257,7 +257,7 @@ TEST_SUITE("Fragment Ordering") {
             CHECK(apFrame->mSize == FRAME_SIZE);
 
             lDataReceived++;
-        }, 50, 20);
+        }, [](std::span<const uint8_t>) {}, 50, 20);
 
         auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
             std::vector<uint8_t> lPacket(aData.begin(), aData.end());
@@ -317,7 +317,7 @@ TEST_SUITE("Fragment Ordering") {
             CHECK(apFrame->mSize == FRAME_SIZE);
 
             lDataReceived++;
-        }, 100, 40);
+        }, [](std::span<const uint8_t>) {}, 100, 40);
 
         auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
             std::vector<uint8_t> lPacket(aData.begin(), aData.end());
@@ -386,7 +386,7 @@ TEST_SUITE("Fragment Ordering") {
             lLastReceivedSuperFrame = apFrame->mSuperFrameNo;
 
             lDataReceived++;
-        }, 100, 40);
+        }, [](std::span<const uint8_t>) {}, 100, 40);
 
         auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
             std::vector<uint8_t> lPacket(aData.begin(), aData.end());

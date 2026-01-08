@@ -1,0 +1,417 @@
+================================================================================
+EFP ADVANCED RE-SEND MECHANISM - PROJECT SPECIFICATION
+================================================================================
+Version: 1.0
+Date: 2026-01-03
+Author: Generated from design discussion
+
+================================================================================
+1. OVERVIEW
+================================================================================
+
+This project adds sub-fragmentation and NACK-based retransmission to EFP.
+
+CONCEPT:
+- In normal mode (SubFragmentMode::SINGLE), each UDP packet contains 1 fragment
+- In sub-fragment modes (2/4/8), each UDP packet contains multiple fragments
+- When a UDP packet is lost, the receiver sends a NACK for the missing fragments
+- The sender retransmits by embedding missing fragments into ongoing traffic
+- This spreads retransmission cost across multiple packets, reducing burst impact
+
+EXAMPLE (SubFragmentMode::QUARTER - 4 fragments per UDP packet):
+- Sender sends fragments 4,5,6,7 in one UDP packet
+- UDP packet is lost
+- Receiver detects gap and sends NACK for fragments 4,5,6,7
+- Sender is now sending fragments 50,51,52,53
+- Instead, sender sends: 4,50,51,52 then 5,53,54,55 then 6,56,57,58 etc.
+- Missing fragments are interleaved with current data
+
+DEADLINE/PRIORITY MODE:
+- If a fragment has been NACKed X times or deadline approaches
+- Sender can burst multiple retransmit fragments in one packet
+- Configurable thresholds for retry count and time remaining
+
+================================================================================
+2. FRAME STRUCTURES
+================================================================================
+
+2.1 TYPE0 SIGNALING (Extended)
+------------------------------
+Type0 is extended with a subtype system for different signaling purposes.
+
+Type0 Subtype Registry:
+  0x00 = Reserved (do not use)
+  0x01 = NACK (negative acknowledgment)
+  0x02-0xFF = Reserved for future use
+
+FrameType0Nack structure (variable length):
+┌──────────┬─────────┬───────────┬─────────────────────────────────┐
+│ Type+Flg │ Subtype │ NackCount │ [NackEntry array]               │
+│  1 byte  │ 1 byte  │  1 byte   │ NackCount × sizeof(NackEntry)   │
+└──────────┴─────────┴───────────┴─────────────────────────────────┘
+
+NackEntry structure (6 bytes each):
+┌──────────┬──────────────┬──────────────┬──────────────────┐
+│ StreamId │ SuperFrameNo │ FragmentNo   │ FragmentNo End   │
+│  1 byte  │   2 bytes    │   2 bytes    │    1 byte        │
+└──────────┴──────────────┴──────────────┴──────────────────┘
+
+- StreamId: Which stream the NACK applies to
+- SuperFrameNo: The SuperFrame containing missing fragments
+- FragmentNo: Starting fragment number that is missing
+- FragmentNoEnd: How many consecutive fragments (0 = just FragmentNo,
+                 1 = FragmentNo and FragmentNo+1, etc. Max 255 consecutive)
+
+Maximum NACKs per packet: (MTU - 3) / 6 = ~240 entries for 1456 MTU
+
+2.2 TYPE4 BUNDLE WRAPPER
+------------------------
+Type4 is a simple container that bundles multiple Type1/Type2/Type3 frames.
+
+FrameType4 structure (2 bytes header):
+┌──────────┬────────────┬─────────────────────────────────────────┐
+│ Type+Flg │ FrameCount │ [Complete Type1/Type2/Type3 frames]     │
+│  1 byte  │   1 byte   │ Back-to-back, no padding                │
+└──────────┴────────────┴─────────────────────────────────────────┘
+
+- FrameCount: Number of frames bundled (1-255, typically 2/4/8)
+- Bundled frames are complete Type1/Type2/Type3 with their own headers
+- Receiver unwraps and processes each inner frame normally
+- Maximum frames: 255 (uint8_t limit)
+
+Example with 4 fragments bundled:
+┌────────────┬────────────┬─────────────────────────────────────────────────┐
+│ 0x04 + flg │     4      │ [Type1+payload][Type1+payload][Type1+payload]   │
+│            │            │ [Type1+payload]                                 │
+└────────────┴────────────┴─────────────────────────────────────────────────┘
+
+================================================================================
+3. SENDER CHANGES
+================================================================================
+
+3.1 NEW ENUMS AND TYPES
+-----------------------
+
+enum class SubFragmentMode : uint8_t {
+    SINGLE  = 1,  // Normal mode: 1 fragment per UDP packet (default)
+    HALF    = 2,  // 2 fragments per UDP packet
+    QUARTER = 4,  // 4 fragments per UDP packet
+    EIGHTH  = 8   // 8 fragments per UDP packet
+};
+
+3.2 SENDER TEMPLATE CHANGES
+---------------------------
+
+Constructor addition:
+- SubFragmentMode aSubFragmentMode = SubFragmentMode::SINGLE
+- uint32_t aRetentionMs = 0 (0 = no retention/retransmit support)
+- size_t aRetentionMaxBytes = 50 * 1024 * 1024 (50MB default cap)
+
+New members:
+- mSubFragmentMode: Current sub-fragment mode
+- mRetentionMs: How long to keep fragments for retransmit
+- mRetentionMaxBytes: Maximum bytes in retention buffer
+- mRetentionBuffer: Circular buffer of sent fragments
+- mRetransmitQueue: Priority queue of fragments to retransmit
+- mStatistics: SenderStatistics struct
+
+New methods:
+- receiveNack(std::span<const uint8_t> aData): Process incoming NACK
+- getStatistics(): Return current SenderStatistics
+
+3.3 RETENTION BUFFER DESIGN
+---------------------------
+
+Key: {mSuperFrameNo (16-bit), mFragmentNo (16-bit)} = 32-bit combined key
+
+Structure:
+struct RetainedFragment {
+    uint64_t mTimestampUs;       // When fragment was sent
+    uint16_t mSuperFrameNo;      // SuperFrame sequence
+    uint16_t mFragmentNo;        // Fragment within SuperFrame
+    uint8_t  mStreamId;          // Stream ID
+    uint8_t  mRetryCount;        // Times this has been retransmitted
+    std::vector<uint8_t> mData;  // Complete fragment data (Type1/2/3 frame)
+};
+
+Storage: std::map<uint32_t, RetainedFragment> or circular buffer with map index
+
+Eviction policy:
+1. Time-based: Remove fragments older than mRetentionMs
+2. Size-based: If mRetentionMaxBytes exceeded, remove oldest
+3. Wrap-around: If SuperFrameNo approaches wrap, evict to prevent collision
+
+3.4 RETRANSMIT QUEUE
+--------------------
+
+Structure:
+struct RetransmitRequest {
+    uint16_t mSuperFrameNo;
+    uint16_t mFragmentNo;
+    uint8_t  mStreamId;
+    uint64_t mDeadlineUs;        // When this MUST be sent (0 = no deadline)
+    uint8_t  mPriority;          // Higher = more urgent
+    uint8_t  mRetryCount;        // Times requested
+};
+
+Queue: std::priority_queue sorted by (priority, deadline, retryCount)
+
+3.5 SENDING LOGIC
+-----------------
+
+sendSubFragmented():
+1. Fragment data as normal (Type1/Type2/Type3)
+2. Bundle fragments according to SubFragmentMode
+3. Before sending each bundle:
+   a. Check retransmit queue for pending retransmits
+   b. If retransmits pending, replace some current fragments with retransmits
+   c. Interleave: typically 1 retransmit per bundle
+   d. If deadline approaching or retry count high, send multiple retransmits
+4. Store sent fragments in retention buffer
+5. Send Type4 bundle via callback
+6. Update statistics
+
+================================================================================
+4. RECEIVER CHANGES
+================================================================================
+
+4.1 RECEIVER TEMPLATE CHANGES
+-----------------------------
+
+Constructor addition:
+- bool aEnableNack = false (enable NACK generation)
+- uint32_t aNackDelayMs = 10 (wait before sending NACK, allows reordering)
+- uint8_t aNackMaxRetries = 3 (max times to NACK same fragment)
+
+New members:
+- mEnableNack: Whether NACK generation is enabled
+- mNackDelayMs: Delay before generating NACK
+- mNackMaxRetries: Maximum NACK retries per fragment
+- mNackCallback: Callback to send NACK data
+- mStatistics: ReceiverStatistics struct
+
+New methods:
+- setNackCallback(callback): Set callback for sending NACKs
+- getStatistics(): Return current ReceiverStatistics
+
+4.2 NACK GENERATION LOGIC
+-------------------------
+
+On receiving fragments (handleType1/2/3/4):
+1. Track expected next fragment per SuperFrame
+2. If gap detected and mEnableNack:
+   a. Start timer for mNackDelayMs
+   b. After delay, check if gap still exists
+   c. If gap exists, generate NackEntry for missing range
+   d. Batch NackEntries and send via Type0 NACK
+3. Track retry count per missing fragment
+4. Stop NACKing after mNackMaxRetries
+
+4.3 HANDLING TYPE4 BUNDLES
+--------------------------
+
+handleType4():
+1. Validate header (size >= 2, frame count > 0)
+2. Parse FrameCount
+3. Iterate through bundled frames:
+   a. Read frame type from first byte
+   b. Determine frame size based on type
+   c. Call appropriate handler (handleType1/2/3)
+   d. Advance to next frame
+4. Return error if any inner frame fails
+
+4.4 HANDLING TYPE0 NACK (Sender side)
+-------------------------------------
+
+receiveNack():
+1. Validate Type0 header and subtype
+2. Parse NackCount
+3. For each NackEntry:
+   a. Look up fragments in retention buffer
+   b. If found, add to retransmit queue
+   c. If not found (expired), ignore
+4. Update statistics (mNacksReceived)
+
+================================================================================
+5. WRAP-AROUND PROTECTION
+================================================================================
+
+SuperFrameNo is 16-bit, wraps at 65535.
+
+PROBLEM:
+- Retention buffer holds fragments keyed by SuperFrameNo
+- If buffer holds frame 65530 and current is 5, they're both "valid"
+- But if current is 65530 and we get NACK for 5, that's ancient
+
+SOLUTION:
+- Track "oldest valid" SuperFrameNo in retention buffer
+- Use signed delta calculation (same as recalculateSuperFrameNo)
+- When adding to retention buffer:
+  1. Calculate delta from oldest to newest
+  2. If delta > 32767, evict oldest regardless of time
+- When receiving NACK:
+  1. Calculate delta from current SuperFrameNo to requested
+  2. If delta > 32767 (requested is "ahead" = actually very old), ignore
+
+Implementation:
+- mOldestRetainedSuperFrameNo: Oldest SuperFrameNo in buffer
+- mNewestRetainedSuperFrameNo: Newest SuperFrameNo in buffer
+- On eviction, update mOldestRetainedSuperFrameNo
+- On add, check wrap distance
+
+================================================================================
+6. STATISTICS STRUCTURES
+================================================================================
+
+struct SenderStatistics {
+    uint64_t mRetentionBufferBytes;      // Current bytes in retention buffer
+    uint32_t mRetentionBufferFragments;  // Current fragments in retention buffer
+    uint64_t mFragmentsSent;             // Total fragments sent
+    uint64_t mBundlesSent;               // Total Type4 bundles sent
+    uint64_t mNacksReceived;             // Total NACKs received
+    uint64_t mRetransmittedFragments;    // Total fragments retransmitted
+    uint32_t mRetransmitQueueSize;       // Current retransmit queue depth
+    double   mFragmentsPerSecond;        // Recent send rate (sliding window)
+    double   mRetransmitsPerSecond;      // Recent retransmit rate
+};
+
+struct ReceiverStatistics {
+    uint64_t mFragmentsReceived;         // Total fragments received
+    uint64_t mBundlesReceived;           // Total Type4 bundles received
+    uint64_t mNacksSent;                 // Total NACKs sent
+    uint64_t mCompleteFrames;            // Total complete SuperFrames delivered
+    uint64_t mBrokenFrames;              // Total broken SuperFrames delivered
+    uint64_t mDuplicateFragments;        // Duplicate fragments received
+    uint32_t mPendingBuckets;            // Current active buckets
+    double   mFragmentsPerSecond;        // Recent receive rate
+    double   mNacksPerSecond;            // Recent NACK rate
+};
+
+Rate calculation: Sliding window of last 1 second, updated on each operation.
+
+================================================================================
+7. IMPLEMENTATION PHASES
+================================================================================
+
+PHASE 1: Frame Structures (efp_internal.h)
+- Add FrameType::TYPE4 to enum
+- Add Type0Subtype enum
+- Add NackEntry struct
+- Add FrameType0Nack struct
+- Add FrameType4 struct
+- Add static_asserts for sizes
+
+PHASE 2: Sender Sub-fragmentation (efp.h)
+- Add SubFragmentMode enum
+- Add constructor parameter for mode
+- Implement sendSubFragmented() for bundling
+- Add retention buffer (without NACK processing yet)
+- Add SenderStatistics struct and getStatistics()
+
+PHASE 3: Receiver Bundle Handling (efp.h)
+- Add handleType4() method
+- Unwrap and process inner frames
+- Add ReceiverStatistics struct and getStatistics()
+
+PHASE 4: NACK Generation (efp.h - Receiver)
+- Add NACK callback mechanism
+- Implement gap detection
+- Implement NACK batching and sending
+- Add delay timer for reordering tolerance
+
+PHASE 5: NACK Processing (efp.h - Sender)
+- Implement receiveNack() method
+- Add retransmit queue
+- Implement interleaved retransmission
+- Implement priority/deadline burst mode
+
+PHASE 6: Wrap-around Protection
+- Add oldest/newest tracking
+- Implement wrap-safe comparisons
+- Add wrap-triggered eviction
+
+PHASE 7: Testing
+- test_bundle.cpp: Type4 packing/unpacking, all sub-fragment modes
+- test_nack.cpp: NACK generation, batching, retry limits
+- test_retransmit.cpp: Retention buffer, interleaving, burst mode
+- test_wraparound.cpp: Sequence wrap edge cases
+- Update existing tests to verify no regression
+
+PHASE 8: Documentation
+- Update README.md with new API
+- Document SubFragmentMode options
+- Document NACK configuration
+- Add examples for retransmit setup
+
+================================================================================
+8. API EXAMPLES
+================================================================================
+
+8.1 SENDER WITH RETRANSMIT SUPPORT
+----------------------------------
+
+// Create sender with sub-fragment mode and retention
+auto lSender = efp::makeSender(
+    1456,                              // MTU
+    [&](std::span<const uint8_t> aData, uint8_t aStreamId) {
+        sendToNetwork(aData, aStreamId);
+    },
+    efp::SubFragmentMode::QUARTER,     // 4 fragments per UDP packet
+    1000,                              // 1000ms retention time
+    50 * 1024 * 1024                   // 50MB max retention
+);
+
+// Send data as normal
+lSender.send(lPayload, lPayloadType, lPts, lDts, lCode, lStreamId);
+
+// When NACK received from network:
+lSender.receiveNack(lNackData);
+
+// Get statistics
+auto lStats = lSender.getStatistics();
+std::cout << "Retransmit queue: " << lStats.mRetransmitQueueSize << std::endl;
+
+8.2 RECEIVER WITH NACK SUPPORT
+------------------------------
+
+// Create receiver with NACK enabled
+auto lReceiver = efp::makeReceiver(
+    [](efp::SuperFramePtr apFrame) {
+        processFrame(apFrame);
+    },
+    100,                               // Timeout ms
+    0,                                 // HOL timeout
+    efp::ReceiverMode::THREADED,
+    true,                              // Enable NACK
+    10,                                // NACK delay ms
+    3                                  // Max NACK retries
+);
+
+// Set NACK callback (sends NACK data to sender)
+lReceiver.setNackCallback([&](std::span<const uint8_t> aData) {
+    sendNackToSender(aData);
+});
+
+// Receive data as normal (handles Type4 bundles automatically)
+lReceiver.receive(lData);
+
+// Get statistics
+auto lStats = lReceiver.getStatistics();
+std::cout << "NACKs sent: " << lStats.mNacksSent << std::endl;
+
+================================================================================
+9. BACKWARD COMPATIBILITY
+================================================================================
+
+- SubFragmentMode::SINGLE is default, produces identical output to current
+- Retention disabled by default (aRetentionMs = 0)
+- NACK disabled by default (aEnableNack = false)
+- Existing code continues to work without modification
+- Old receivers can't process Type4 (will reject as invalid type)
+- For mixed deployments, use SubFragmentMode::SINGLE with retention enabled
+  (sender can still receive NACKs and retransmit as individual Type1/2/3)
+
+================================================================================
+END OF SPECIFICATION
+================================================================================
+

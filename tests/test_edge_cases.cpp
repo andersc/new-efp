@@ -38,7 +38,7 @@ TEST_SUITE("Edge Cases") {
         auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
             lCapturedFrame = std::move(apFrame);
             lReceived = true;
-        }, 100, 0);
+        }, [](std::span<const uint8_t>) {}, 100, 0);
 
         auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
             (void)lReceiver.receive(aData, 0);
@@ -62,7 +62,7 @@ TEST_SUITE("Edge Cases") {
         auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
             lCapturedFrame = std::move(apFrame);
             lReceived = true;
-        }, 100, 0);
+        }, [](std::span<const uint8_t>) {}, 100, 0);
 
         auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
             (void)lReceiver.receive(aData, 0);
@@ -88,7 +88,7 @@ TEST_SUITE("Edge Cases") {
             if (!apFrame->mBroken) {
                 lReceivedCount++;
             }
-        }, 100, 0);
+        }, [](std::span<const uint8_t>) {}, 100, 0);
 
         auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
             (void)lReceiver.receive(aData, 0);
@@ -105,7 +105,7 @@ TEST_SUITE("Edge Cases") {
     }
 
     TEST_CASE("Receive with invalid frame type") {
-        auto lReceiver = efp::makeReceiver([](efp::SuperFramePtr) {}, 100, 0);
+        auto lReceiver = efp::makeReceiver([](efp::SuperFramePtr) {}, [](std::span<const uint8_t>) {}, 100, 0);
 
         std::vector<uint8_t> lInvalidPacket = {0x0F, 0x00, 0x00, 0x00};
         auto lResult = lReceiver.receive(lInvalidPacket);
@@ -114,7 +114,7 @@ TEST_SUITE("Edge Cases") {
     }
 
     TEST_CASE("Receive with packet too small for header") {
-        auto lReceiver = efp::makeReceiver([](efp::SuperFramePtr) {}, 100, 0);
+        auto lReceiver = efp::makeReceiver([](efp::SuperFramePtr) {}, [](std::span<const uint8_t>) {}, 100, 0);
 
         std::vector<uint8_t> lTooSmall = {0x01, 0x00, 0x00, 0x00};
         auto lResult = lReceiver.receive(lTooSmall);
@@ -127,7 +127,7 @@ TEST_SUITE("Edge Cases") {
 
         auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr) {
             lReceivedCount++;
-        }, 50, 0);  // 50ms timeout
+        }, [](std::span<const uint8_t>) {}, 50, 0);  // 50ms timeout
 
         std::vector<std::vector<uint8_t>> lFragments;
         auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
@@ -155,7 +155,7 @@ TEST_SUITE("Edge Cases") {
 
         auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr) {
             lReceived = true;
-        }, 100, 0);
+        }, [](std::span<const uint8_t>) {}, 100, 0);
 
         auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
             (void)lReceiver.receive(aData, 0);
@@ -186,7 +186,7 @@ TEST_SUITE("Edge Cases") {
             CHECK(lContentValid);
 
             lReceivedCount++;
-        }, 100, 0);
+        }, [](std::span<const uint8_t>) {}, 100, 0);
 
         auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
             (void)lReceiver.receive(aData, 0);
@@ -214,7 +214,7 @@ TEST_SUITE("Edge Cases") {
         auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
             lCapturedFrame = std::move(apFrame);
             lReceived = true;
-        }, 100, 0);
+        }, [](std::span<const uint8_t>) {}, 100, 0);
 
         auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
             (void)lReceiver.receive(aData, 0);
@@ -234,7 +234,7 @@ TEST_SUITE("Edge Cases") {
         auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
             lCapturedFrame = std::move(apFrame);
             lReceived = true;
-        }, 100, 0);
+        }, [](std::span<const uint8_t>) {}, 100, 0);
 
         auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
             (void)lReceiver.receive(aData, 0);
@@ -249,7 +249,7 @@ TEST_SUITE("Edge Cases") {
     }
 
     TEST_CASE("Receiver stop is idempotent") {
-        auto lReceiver = efp::makeReceiver([](efp::SuperFramePtr) {}, 100, 0);
+        auto lReceiver = efp::makeReceiver([](efp::SuperFramePtr) {}, [](std::span<const uint8_t>) {}, 100, 0);
 
         lReceiver.stop();
         lReceiver.stop();

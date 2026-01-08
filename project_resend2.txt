@@ -1,0 +1,24 @@
+Plan: Implement NACK Handling with HOL Timeout in Receiver
+Implement adaptive NACK generation and HOL blocking timeout with strict validation. Invalid timing configurations throw std::invalid_argument at construction.
+Steps
+Add NackCallbackT template parameter and concept in efp.h (~line 54). Add NackCallbackConcept = std::invocable<T, std::span<const uint8_t>>. Update Receiver class signature to Receiver<ReceiveCallbackT, NackCallbackT, BUFFER_SIZE>.
+Extend Receiver constructor (~line 756) with: aNackCallback, aMaxNackRetries (default=3), aNackIntervalMs (default=0=auto). Add validation throwing std::invalid_argument if: mHolTimeoutMs > 0 && mHolTimeoutMs >= mTimeoutMs, or mNackIntervalMs * mMaxNackRetries >= mTimeoutMs.
+Add jitter tracking members (~line 1460): mJitterUs (int64_t), mLastArrivalUs (int64_t). Call updateJitter() in receive() to track inter-arrival variance.
+Extend Bucket struct (~line 860): add mFirstArrivalUs (int64_t), mLastNackUs (int64_t, 0=never), mNackCount (uint8_t).
+Implement calculateNackDelayUs(): returns mNackIntervalMs * 1000 if manual, else max(10000, 4 * mJitterUs). Apply backoff: delay << bucket.mNackCount, capped so total doesn't exceed remaining time to timeout.
+Implement buildNack(Bucket*): scan mReceivedFragments bitset for missing fragments 0..mOfFragmentNo, coalesce consecutive gaps into NackEntry items, return serialized FrameType0Nack as std::vector<uint8_t>.
+Implement processNacks(): iterate mBucketMap, skip complete buckets, check if first NACK delay or retry delay elapsed, verify mNackCount < mMaxNackRetries, call buildNack() and mNackCallback(), increment mStatistics.mNacksSent and bucket.mNackCount, update bucket.mLastNackUs.
+Implement HOL logic in processTimeouts() (~line 1405): iterate mBucketMap in delivery order, track if any newer bucket is complete, if older bucket exceeds mHolTimeoutMs AND newer complete exists, deliver old broken bucket to unblock.
+Call processNacks() from processTimeouts() before HOL/delivery logic.
+Update makeReceiver() factory and deduction guides (~line 1495) with new template parameter and constructor arguments.
+Add receiver NACK tests in tests/test_nack.cpp:
+Receiver sends NACK for missing fragment after grace period
+Receiver respects max NACK retry limit
+Receiver NACK backoff increases exponentially
+Receiver adaptive delay tracks jitter
+Receiver throws on invalid timeout vs HOL config
+Receiver throws on invalid NACK budget vs timeout
+HOL delivers old broken frame when newer complete blocked
+HOL does not trigger without newer complete frame
+Full round-trip: NACK triggers retransmit and frame completes
+Update README.md documenting NACK callback, HOL timeout, validation rules, and usage examples.
