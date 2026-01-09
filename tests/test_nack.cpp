@@ -292,27 +292,26 @@ TEST_SUITE("NACK and Retransmission") {
     TEST_CASE("Receiver statistics track duplicate fragments") {
         auto lReceiver = efp::makeReceiver([](efp::SuperFramePtr) {}, [](std::span<const uint8_t>) {}, 100);
 
-        // Create a Type2 frame
-        std::vector<uint8_t> lFrameData(sizeof(efp::FrameType2) + 100);
-        efp::FrameType2 lHeader;
-        lHeader.mFrameType = efp::makeFrameTypeByte(efp::FrameType::TYPE2, 0);
-        lHeader.mStreamId = 1;
-        lHeader.mPayloadType = 0x01;
-        lHeader.mSizeOfData = 100;
-        lHeader.mSuperFrameNo = 0;
-        lHeader.mOfFragmentNo = 0;
-        lHeader.mType1PacketSize = 0;
-        lHeader.mPts = 1000;
-        lHeader.mDtsPtsDiff = 100;
-        lHeader.mPayloadCode = 42;
+        // Use a sender to create proper multi-fragment frames
+        // (single-fragment frames complete immediately, so duplicate detection doesn't apply)
+        std::vector<std::vector<uint8_t>> lFragments;
+        auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
+            lFragments.emplace_back(aData.begin(), aData.end());
+        });
 
-        std::memcpy(lFrameData.data(), &lHeader, sizeof(lHeader));
+        // Send a large frame that requires multiple fragments
+        std::vector<uint8_t> lPayload(MTU * 2);
+        (void)lSender.send(lPayload, 0x01, 1000, 1000, 42, 1);
 
-        // Receive same frame twice
-        auto lResult1 = lReceiver.receive(std::span<const uint8_t>(lFrameData), 0);
+        // Should have at least 2 fragments
+        REQUIRE(lFragments.size() >= 2);
+
+        // Receive first fragment
+        auto lResult1 = lReceiver.receive(std::span<const uint8_t>(lFragments[0]), 0);
         CHECK(lResult1 == efp::Result::OK);
 
-        auto lResult2 = lReceiver.receive(std::span<const uint8_t>(lFrameData), 0);
+        // Send same fragment again - should be detected as duplicate
+        auto lResult2 = lReceiver.receive(std::span<const uint8_t>(lFragments[0]), 0);
         CHECK(lResult2 == efp::Result::DUPLICATE_FRAGMENT);
 
         auto lStats = lReceiver.getStatistics();
