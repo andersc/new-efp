@@ -765,7 +765,7 @@ private:
     std::map<uint32_t, RetainedFragment> mRetentionBuffer;
     std::vector<RetransmitRequest> mRetransmitQueue;
     SenderStatistics mStatistics;
-    [[no_unique_address]] SendCallbackT mCallback;
+    SendCallbackT mCallback;
 };
 
 // Deduction guide for Sender
@@ -1716,8 +1716,8 @@ private:
         }
     }
 
-    [[no_unique_address]] ReceiveCallbackT mCallback;
-    [[no_unique_address]] NackCallbackT mNackCallback;
+    ReceiveCallbackT mCallback;
+    NackCallbackT mNackCallback;
     uint32_t mTimeoutMs;
     uint32_t mHolTimeoutMs;
     uint8_t mMaxNackRetries;

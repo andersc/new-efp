@@ -41,7 +41,6 @@ This library leverages modern C++20 features for improved performance and safety
 - **`std::thread` with `std::atomic`** — Cross-platform threading with atomic stop flags
 - **`[[likely]]`/`[[unlikely]]`** — Branch prediction hints for optimized hot paths
 - **`[[nodiscard]]`** — Prevents ignoring important return values
-- **`[[no_unique_address]]`** — Empty callback types don't take space in the class
 - **`consteval`** — Compile-time only evaluation for version queries
 - **`<bit>` header** — `std::has_single_bit` for power-of-2 validation
 - **Template-based callbacks** — Callbacks are template parameters for zero-overhead inlining (no `std::function`)
@@ -419,7 +418,6 @@ MIT License - See [LICENSE](LICENSE) for details.
 **New Features:**
 - **`makeSender()` factory function** — Creates Sender with automatic callback type deduction
 - **`makeReceiver()` factory function** — Creates Receiver with automatic callback type deduction
-- **`[[no_unique_address]]`** — Empty callback types don't take space
 - **Zero-overhead callbacks** — Template-based callbacks are inlined by compiler (no std::function overhead)
 
 **Migration Guide:**
