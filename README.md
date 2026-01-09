@@ -48,10 +48,12 @@ This library leverages modern C++20 features for improved performance and safety
 
 ## Platform Support
 
-EFP is tested on:
-- **Linux** — GCC and Clang
-- **macOS** — Apple Clang
-- **Windows** — MSVC
+EFP requires a **64-bit system** and is tested on:
+- **Linux** — GCC and Clang (x86_64, ARM64)
+- **macOS** — Apple Clang (x86_64, ARM64)
+- **Windows** — MSVC (x64)
+
+> **Note:** 32-bit systems are not supported. The library enforces this with a compile-time static assertion.
 
 ## Quick Start
 

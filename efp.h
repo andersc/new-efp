@@ -11,6 +11,9 @@
 #ifndef EFP_H
 #define EFP_H
 
+// EFP only supports 64-bit systems
+static_assert(sizeof(void*) == 8, "EFP requires a 64-bit system");
+
 #include <cstdint>
 #include <cstddef>
 #include <cstring>
@@ -149,7 +152,7 @@ public:
 
     explicit SuperFrame(size_t aAllocSize) {
         if (aAllocSize > 0) {
-#ifdef _WIN64
+#ifdef _WIN32
             mpData = (uint8_t*)(_aligned_malloc(aAllocSize, 32));
 #else
             if (posix_memalign((void**)(&mpData), 32, aAllocSize) != 0) {
@@ -164,7 +167,7 @@ public:
 
     ~SuperFrame() {
         if (mpData) {
-#ifdef _WIN64
+#ifdef _WIN32
             _aligned_free(mpData);
 #else
             free(mpData);
@@ -1213,6 +1216,11 @@ private:
             return Result::DUPLICATE_FRAGMENT;
         }
 
+        // Validate payload size matches expected fragment size to prevent buffer overflow
+        if (lPayloadSize != lpBucket->mFragmentSize) [[unlikely]] {
+            return Result::FRAME_SIZE_MISMATCH;
+        }
+
         lpBucket->mReceivedFragments[lpHeader->mFragmentNo] = true;
         lpBucket->mFragmentCount++;
         mStatistics.mFragmentsReceived++;
@@ -1356,6 +1364,12 @@ private:
             lOffset = (size_t)(lpHeader->mType1PacketSize) * lpHeader->mOfFragmentNo;
         }
 
+        // Validate write won't exceed allocated buffer
+        auto lAllocatedSize = (lpBucket->mFragmentSize * ((size_t)(lpBucket->mOfFragmentNo) + 1));
+        if (lOffset + lpHeader->mSizeOfData > lAllocatedSize) [[unlikely]] {
+            return Result::BUFFER_OUT_OF_BOUNDS;
+        }
+
         std::memcpy(lpBucket->mpFrame->mpData + lOffset, apData + sizeof(FrameType2), lpHeader->mSizeOfData);
 
         return Result::OK;
@@ -1452,6 +1466,13 @@ private:
             return Result::DUPLICATE_FRAGMENT;
         }
 
+        // Validate payload size won't cause buffer overflow
+        auto lOffset = lpBucket->mFragmentSize * lFragmentNo;
+        auto lAllocatedSize = lpBucket->mFragmentSize * ((size_t)(lpBucket->mOfFragmentNo) + 1);
+        if (lOffset + lPayloadSize > lAllocatedSize) [[unlikely]] {
+            return Result::BUFFER_OUT_OF_BOUNDS;
+        }
+
         lpBucket->mReceivedFragments[lFragmentNo] = true;
         lpBucket->mFragmentCount++;
         mStatistics.mFragmentsReceived++;
@@ -1475,7 +1496,6 @@ private:
             lpBucket->mpFrame->mSize = (lpBucket->mFragmentSize * (lpHeader->mOfFragmentNo - 1)) + lPayloadSize;
         }
 
-        auto lOffset = lpBucket->mFragmentSize * lFragmentNo;
         std::memcpy(lpBucket->mpFrame->mpData + lOffset, apData + sizeof(FrameType3), lPayloadSize);
 
         return Result::OK;
