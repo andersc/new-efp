@@ -27,7 +27,6 @@
 #include <span>
 #include <bit>
 #include <concepts>
-#include <stop_token>
 #include <type_traits>
 #include <algorithm>
 #include <stdexcept>
@@ -808,11 +807,11 @@ public:
 
         if (mMode == ReceiverMode::THREADED) {
             mRunning = true;
-            mWorkerThread = std::jthread([this](std::stop_token aStopToken) {
-                workerLoop(aStopToken);
+            mWorkerThread = std::thread([this]() {
+                workerLoop();
             });
-            mDeliveryThread = std::jthread([this](std::stop_token aStopToken) {
-                deliveryLoop(aStopToken);
+            mDeliveryThread = std::thread([this]() {
+                deliveryLoop();
             });
         }
     }
@@ -895,19 +894,17 @@ public:
         return lStats;
     }
 
-    // Stop receiver threads (jthreads auto-join on destruction but this allows early stop)
+    // Stop receiver threads
     void stop() {
         auto lExpected = true;
         if (!mRunning.compare_exchange_strong(lExpected, false)) {
             return;  // Already stopped or not started
         }
 
-        // Request stop on jthreads
-        mWorkerThread.request_stop();
-        mDeliveryThread.request_stop();
+        // Signal stop via atomic bool (threads check mRunning)
         mDeliveryCondition.notify_all();
 
-        // jthreads auto-join, but we can explicitly join for deterministic behavior
+        // Join threads
         if (mWorkerThread.joinable()) {
             mWorkerThread.join();
         }
@@ -1653,10 +1650,10 @@ private:
         }
     }
 
-    void workerLoop(std::stop_token aStopToken) {
+    void workerLoop() {
         constexpr auto SLEEP_DURATION = std::chrono::microseconds(10000);  // 10ms
 
-        while (!aStopToken.stop_requested() && mRunning.load()) {
+        while (mRunning.load()) {
             {
                 std::lock_guard<std::recursive_mutex> lLock(mNetMutex);
                 processTimeouts();
@@ -1665,16 +1662,16 @@ private:
         }
     }
 
-    void deliveryLoop(std::stop_token aStopToken) {
-        while (!aStopToken.stop_requested() && mRunning.load()) {
+    void deliveryLoop() {
+        while (mRunning.load()) {
             SuperFramePtr lpFrame;
             {
                 std::unique_lock<std::mutex> lLock(mDeliveryMutex);
-                mDeliveryCondition.wait(lLock, [this, &aStopToken] {
-                    return mDeliveryReady || !mRunning.load() || aStopToken.stop_requested();
+                mDeliveryCondition.wait(lLock, [this] {
+                    return mDeliveryReady || !mRunning.load();
                 });
 
-                if (aStopToken.stop_requested() || (!mRunning.load() && mDeliveryQueue.empty())) break;
+                if (!mRunning.load() && mDeliveryQueue.empty()) break;
 
                 if (!mDeliveryQueue.empty()) [[likely]] {
                     lpFrame = std::move(mDeliveryQueue.front());
@@ -1715,8 +1712,8 @@ private:
     int64_t mExpectedIntervalUs = 0; // Expected inter-arrival time
 
     std::atomic<bool> mRunning{false};
-    std::jthread mWorkerThread;
-    std::jthread mDeliveryThread;
+    std::thread mWorkerThread;
+    std::thread mDeliveryThread;
 
     std::mutex mDeliveryMutex;
     std::deque<SuperFramePtr> mDeliveryQueue;

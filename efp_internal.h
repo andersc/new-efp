@@ -10,6 +10,17 @@
 
 #include <cstdint>
 
+// Cross-platform packed struct macros
+#ifdef _MSC_VER
+    #define EFP_PACKED_BEGIN __pragma(pack(push, 1))
+    #define EFP_PACKED_END __pragma(pack(pop))
+    #define EFP_PACKED_STRUCT
+#else
+    #define EFP_PACKED_BEGIN
+    #define EFP_PACKED_END
+    #define EFP_PACKED_STRUCT __attribute__((packed))
+#endif
+
 namespace efp {
 
 // Frame type identifiers (4 LSB of first byte)
@@ -40,25 +51,30 @@ namespace Flags {
 }
 
 // Type0: Signaling frame - minimal 1 byte header
-struct __attribute__((packed)) FrameType0 {
+EFP_PACKED_BEGIN
+struct EFP_PACKED_STRUCT FrameType0 {
     uint8_t mFrameType = (uint8_t)(FrameType::TYPE0);
 };
+EFP_PACKED_END
 static_assert(sizeof(FrameType0) == 1, "FrameType0 must be 1 byte");
 
 // Type1: Fragment frame - 8 bytes header
 // Used for all fragments except the last (Type2) and penultimate overflow (Type3)
-struct __attribute__((packed)) FrameType1 {
+EFP_PACKED_BEGIN
+struct EFP_PACKED_STRUCT FrameType1 {
     uint8_t  mFrameType    = (uint8_t)(FrameType::TYPE1);  // Frame type + flags
     uint8_t  mStreamId     = 0;       // Stream identifier
     uint16_t mSuperFrameNo = 0;       // Super frame sequence number
     uint16_t mFragmentNo   = 0;       // This fragment's number (0-based)
     uint16_t mOfFragmentNo = 0;       // Total number of fragments (last fragment index)
 };
+EFP_PACKED_END
 static_assert(sizeof(FrameType1) == 8, "FrameType1 must be 8 bytes");
 
 // Type2: Final/small frame with full metadata - 27 bytes header
 // Used for the last fragment or single small frames
-struct __attribute__((packed)) FrameType2 {
+EFP_PACKED_BEGIN
+struct EFP_PACKED_STRUCT FrameType2 {
     uint8_t  mFrameType       = (uint8_t)(FrameType::TYPE2);  // Frame type + flags
     uint8_t  mStreamId        = 0;           // Stream identifier
     uint8_t  mPayloadType     = 0;           // User-defined payload type
@@ -70,46 +86,55 @@ struct __attribute__((packed)) FrameType2 {
     uint32_t mDtsPtsDiff      = UINT32_MAX;  // DTS = PTS - dtsPtsDiff (UINT32_MAX = no DTS)
     uint32_t mPayloadCode     = UINT32_MAX;  // User-defined payload code
 };
+EFP_PACKED_END
 static_assert(sizeof(FrameType2) == 27, "FrameType2 must be 27 bytes");
 
 // Type3: Penultimate overflow frame - 8 bytes header
 // Used when the second-to-last fragment doesn't fit Type2's remaining space
-struct __attribute__((packed)) FrameType3 {
+EFP_PACKED_BEGIN
+struct EFP_PACKED_STRUCT FrameType3 {
     uint8_t  mFrameType       = (uint8_t)(FrameType::TYPE3);  // Frame type + flags
     uint8_t  mStreamId        = 0;       // Stream identifier
     uint16_t mSuperFrameNo    = 0;       // Super frame sequence number
     uint16_t mType1PacketSize = 0;       // Size of Type1 fragment payloads
     uint16_t mOfFragmentNo    = 0;       // Total number of fragments (last fragment index)
 };
+EFP_PACKED_END
 static_assert(sizeof(FrameType3) == 8, "FrameType3 must be 8 bytes");
 
 // Type4: Bundle frame - 2 bytes header
 // Contains multiple Type1/Type2/Type3 frames bundled together
 // Used for sub-fragmentation modes (2/4/8 fragments per UDP packet)
-struct __attribute__((packed)) FrameType4 {
+EFP_PACKED_BEGIN
+struct EFP_PACKED_STRUCT FrameType4 {
     uint8_t mFrameType   = (uint8_t)(FrameType::TYPE4);  // Frame type + flags
     uint8_t mFrameCount  = 0;  // Number of frames bundled (1-255)
 };
+EFP_PACKED_END
 static_assert(sizeof(FrameType4) == 2, "FrameType4 must be 2 bytes");
 
 // NackEntry: Single NACK request for a range of consecutive fragments - 6 bytes
 // Used within FrameType0Nack to batch multiple NACK requests
-struct __attribute__((packed)) NackEntry {
+EFP_PACKED_BEGIN
+struct EFP_PACKED_STRUCT NackEntry {
     uint8_t  mStreamId       = 0;  // Stream identifier
     uint16_t mSuperFrameNo   = 0;  // SuperFrame containing missing fragments
     uint16_t mFragmentNo     = 0;  // Starting fragment number that is missing
     uint8_t  mFragmentCount  = 0;  // Additional consecutive fragments (0 = just mFragmentNo)
 };
+EFP_PACKED_END
 static_assert(sizeof(NackEntry) == 6, "NackEntry must be 6 bytes");
 
 // Type0 NACK: Signaling frame for retransmit requests - 3 bytes header + NackEntries
 // Variable length: 3 + (mNackCount * 6) bytes
-struct __attribute__((packed)) FrameType0Nack {
+EFP_PACKED_BEGIN
+struct EFP_PACKED_STRUCT FrameType0Nack {
     uint8_t mFrameType  = (uint8_t)(FrameType::TYPE0);  // Frame type + flags
     uint8_t mSubtype    = (uint8_t)(Type0Subtype::NACK);  // Type0 subtype
     uint8_t mNackCount  = 0;  // Number of NackEntry items following
     // Followed by mNackCount * NackEntry
 };
+EFP_PACKED_END
 static_assert(sizeof(FrameType0Nack) == 3, "FrameType0Nack header must be 3 bytes");
 
 // Helper to extract frame type from first byte

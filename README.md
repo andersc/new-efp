@@ -38,13 +38,20 @@ This library leverages modern C++20 features for improved performance and safety
 
 - **Concepts** — `ValidBufferSize`, `SendCallbackConcept`, `ReceiveCallbackConcept` for compile-time validation
 - **`std::span`** — Zero-copy buffer views for efficient data passing (used in send callback)
-- **`std::jthread`** — Self-joining threads with cooperative cancellation via `std::stop_token`
+- **`std::thread` with `std::atomic`** — Cross-platform threading with atomic stop flags
 - **`[[likely]]`/`[[unlikely]]`** — Branch prediction hints for optimized hot paths
 - **`[[nodiscard]]`** — Prevents ignoring important return values
 - **`[[no_unique_address]]`** — Empty callback types don't take space in the class
 - **`consteval`** — Compile-time only evaluation for version queries
 - **`<bit>` header** — `std::has_single_bit` for power-of-2 validation
 - **Template-based callbacks** — Callbacks are template parameters for zero-overhead inlining (no `std::function`)
+
+## Platform Support
+
+EFP is tested on:
+- **Linux** — GCC and Clang
+- **macOS** — Apple Clang
+- **Windows** — MSVC
 
 ## Quick Start
 
