@@ -432,6 +432,7 @@ auto lSender = efp::makeSender(1400, [](std::span<const uint8_t> data, uint8_t s
 
 ### Previous Changes
 
+- **Fixed**: Critical heap corruption in `handleType3()` - when Type3 arrives first, the frame buffer was allocated with wrong size (only accounting for Type3 payload, not Type2). This caused buffer overflow when Type2 data was later copied. Now allocates using upper bound: `mType1PacketSize * (mOfFragmentNo + 1)`
 - **Fixed**: "Receiver statistics track duplicate fragments" test now uses multi-fragment frame (single-fragment frames complete immediately so duplicate detection doesn't apply)
 - **Fixed**: Dangling span reference in test_nack.cpp causing Linux memory corruption (SEGFAULT/SIGABRT) - callback now copies data instead of storing span
 - **Fixed**: Missing `<array>` include in test_stress.cpp causing Windows MSVC compilation error

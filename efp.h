@@ -1383,9 +1383,9 @@ private:
         auto lFragmentNo = (uint16_t)(lpHeader->mOfFragmentNo - 1);  // Type3 is always penultimate
         auto lPayloadSize = aSize - sizeof(FrameType3);
 
-        // Sanity check on total size
-        auto lTotalSize = ((size_t)(lpHeader->mType1PacketSize) * (lpHeader->mOfFragmentNo - 1)) +
-                          lPayloadSize;
+        // Estimate total size: each fragment (including Type2) can be up to mType1PacketSize
+        // This is an upper bound; actual size is set when Type2 arrives
+        auto lTotalSize = (size_t)(lpHeader->mType1PacketSize) * ((size_t)(lpHeader->mOfFragmentNo) + 1);
         if (lTotalSize > 100 * 1024 * 1024) [[unlikely]] {  // 100MB max
             return Result::TOO_LARGE_FRAME;
         }
