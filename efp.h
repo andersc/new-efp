@@ -507,10 +507,23 @@ private:
         size_t lType3DataSize = 0;
 
         if (lRemainingAfterType1s == 0) {
-            // Perfect fit into Type1s, last one becomes Type2 with full payload
-            lTotalFragments = (uint16_t)(lNumType1Fragments);
-            lType2DataSize = aType1PayloadSize;
-            lNumType1Fragments--;
+            // Perfect fit into Type1s, last one becomes Type2
+            // Type2 has a larger header than Type1, so we may need to reduce the data size
+            auto lType2MaxPayload = mMtu - lType2HeaderSize;
+            if (aType1PayloadSize <= lType2MaxPayload) {
+                // Type1 payload fits in Type2
+                lTotalFragments = (uint16_t)(lNumType1Fragments);
+                lType2DataSize = aType1PayloadSize;
+                lNumType1Fragments--;
+            } else {
+                // Type1 payload is too large for Type2, need Type3 for overflow
+                lNeedsType3 = true;
+                lTotalFragments = (uint16_t)(lNumType1Fragments + 1);
+                // Last Type1's worth of data needs to be split between Type3 and Type2
+                lType3DataSize = aType1PayloadSize - lType2MaxPayload;
+                lType2DataSize = lType2MaxPayload;
+                lNumType1Fragments--;  // The last chunk goes to Type3+Type2, not Type1
+            }
         } else if (lRemainingAfterType1s <= (mMtu - lType2HeaderSize)) {
             // Remainder fits in Type2
             lTotalFragments = (uint16_t)(lNumType1Fragments + 1);
@@ -1402,6 +1415,11 @@ private:
 
         auto lFragmentNo = (uint16_t)(lpHeader->mOfFragmentNo - 1);  // Type3 is always penultimate
         auto lPayloadSize = aSize - sizeof(FrameType3);
+
+        // Validate payload size: Type3 payload cannot exceed Type1 packet size
+        if (lPayloadSize > lpHeader->mType1PacketSize) [[unlikely]] {
+            return Result::BUFFER_OUT_OF_BOUNDS;
+        }
 
         // Estimate total size: each fragment (including Type2) can be up to mType1PacketSize
         // This is an upper bound; actual size is set when Type2 arrives

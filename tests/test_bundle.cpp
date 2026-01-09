@@ -207,7 +207,7 @@ TEST_SUITE("Bundle (Type4)") {
             if (!aData.empty() && efp::getFrameType(aData[0]) == efp::FrameType::TYPE2) {
                 lType2Count++;
             }
-            lReceiver.receive(aData, 0);
+            (void)lReceiver.receive(aData, 0);
         }, efp::SubFragmentMode::QUARTER);
 
         std::vector<uint8_t> lData(100);
