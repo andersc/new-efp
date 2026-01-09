@@ -51,11 +51,11 @@ TEST_SUITE("NACK and Retransmission") {
     // Test sender processes valid NACK
     // =========================================================================
     TEST_CASE("Sender processes valid NACK and queues retransmit") {
-        std::vector<std::span<const uint8_t>> lSentPackets;
+        std::vector<std::vector<uint8_t>> lSentPackets;
 
         auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
-            // Store a copy of sent data
-            lSentPackets.push_back(aData);
+            // Store a copy of sent data (must copy, span becomes invalid after callback)
+            lSentPackets.emplace_back(aData.begin(), aData.end());
         }, efp::SubFragmentMode::SINGLE, 1000);  // 1 second retention
 
         // Send a frame that requires multiple fragments

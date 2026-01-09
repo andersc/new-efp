@@ -8,6 +8,7 @@
 #include <doctest/doctest.h>
 
 #include "efp.h"
+#include <array>
 #include <vector>
 #include <algorithm>
 #include <numeric>

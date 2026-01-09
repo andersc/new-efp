@@ -237,6 +237,7 @@ TEST_SUITE("Lifecycle") {
     TEST_CASE("Graceful shutdown under load") {
         for (int lIter = 0; lIter < 10; lIter++) {
             std::atomic<bool> lStopSending{false};
+            std::atomic<size_t> lSent{0};
             std::atomic<size_t> lReceived{0};
             std::atomic<bool> lReceiverActive{true};
 
@@ -256,14 +257,22 @@ TEST_SUITE("Lifecycle") {
                 while (!lStopSending.load()) {
                     int lIdx = lI++;
                     (void)lSender.send(lPayload, 0x01, lIdx, lIdx, 0, 1);
+                    lSent++;
                     std::this_thread::sleep_for(std::chrono::microseconds(100));
                 }
             });
 
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            // Wait until at least one frame has been sent before stopping
+            while (lSent.load() == 0) {
+                std::this_thread::yield();
+            }
 
             lStopSending = true;
             lSendThread.join();
+
+            // Wait for receiver to process pending frames
+            auto lFinalSent = lSent.load();
+            (void)waitFor([&]() { return lReceived.load() >= lFinalSent; }, std::chrono::milliseconds(500));
 
             lReceiverActive = false;
             lReceiver.stop();

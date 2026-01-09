@@ -193,8 +193,9 @@ public:
         if (mMtu < 256) mMtu = 256;
         mSendBuffer.resize(mMtu);
         // For bundled mode, we need a larger buffer for the bundle
+        // Account for bundleSize fragments + 1 potential retransmit fragment + header
         if (mSubFragmentMode != SubFragmentMode::SINGLE) {
-            mBundleBuffer.resize(mMtu * (uint8_t)(mSubFragmentMode) + sizeof(FrameType4));
+            mBundleBuffer.resize((size_t)(mMtu) * ((size_t)((uint8_t)(mSubFragmentMode)) + 1) + sizeof(FrameType4));
         }
     }
 
@@ -1008,7 +1009,7 @@ private:
                     lEntry.mStreamId = apBucket->mStreamId;
                     lEntry.mSuperFrameNo = apBucket->mSavedFrameNo;
                     lEntry.mFragmentNo = lRangeStart;
-                    lEntry.mFragmentCount = lRangeCount;
+                    lEntry.mFragmentCount = (uint8_t)(lRangeCount);
                     lEntries.push_back(lEntry);
                     lRangeStart = lI;
                     lRangeCount = 0;
@@ -1019,7 +1020,7 @@ private:
                 lEntry.mStreamId = apBucket->mStreamId;
                 lEntry.mSuperFrameNo = apBucket->mSavedFrameNo;
                 lEntry.mFragmentNo = lRangeStart;
-                lEntry.mFragmentCount = lRangeCount;
+                lEntry.mFragmentCount = (uint8_t)(lRangeCount);
                 lEntries.push_back(lEntry);
                 lRangeStart = UINT16_MAX;
                 lRangeCount = 0;
@@ -1032,7 +1033,7 @@ private:
             lEntry.mStreamId = apBucket->mStreamId;
             lEntry.mSuperFrameNo = apBucket->mSavedFrameNo;
             lEntry.mFragmentNo = lRangeStart;
-            lEntry.mFragmentCount = lRangeCount;
+            lEntry.mFragmentCount = (uint8_t)(lRangeCount);
             lEntries.push_back(lEntry);
         }
 

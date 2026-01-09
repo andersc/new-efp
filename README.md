@@ -432,6 +432,11 @@ auto lSender = efp::makeSender(1400, [](std::span<const uint8_t> data, uint8_t s
 
 ### Previous Changes
 
+- **Fixed**: Dangling span reference in test_nack.cpp causing Linux memory corruption (SEGFAULT/SIGABRT) - callback now copies data instead of storing span
+- **Fixed**: Missing `<array>` include in test_stress.cpp causing Windows MSVC compilation error
+- **Fixed**: Race condition in "Graceful shutdown under load" test - now properly waits for at least one frame to be sent before stopping
+- **Fixed**: Bundle buffer size calculation in Sender to account for interleaved retransmit fragments preventing buffer overflow
+- **Fixed**: uint16_t to uint8_t truncation warnings (C4244) in buildNack() with explicit casts
 - **Improved**: Test data integrity verification - tests now fill payloads with distinctive patterns and verify content arrives correctly:
   - `test_lifecycle.cpp`: "Stop and restart sender" now verifies sequential byte content
   - `test_integration.cpp`: "Send and receive multiple frames sequentially" now verifies payload size and content per frame
