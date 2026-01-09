@@ -411,6 +411,12 @@ private:
 
         auto lKey = makeRetentionKey(aSuperFrameNo, aFragmentNo);
 
+        // If key already exists, subtract old size first
+        auto lExisting = mRetentionBuffer.find(lKey);
+        if (lExisting != mRetentionBuffer.end()) {
+            mRetentionBufferBytes -= lExisting->second.mData.size();
+        }
+
         RetainedFragment lFrag;
         lFrag.mTimestampUs = nowUs();
         lFrag.mSuperFrameNo = aSuperFrameNo;
