@@ -1,8 +1,9 @@
 # Elastic Frame Protocol (EFP)
 
-[![Linux Build](https://github.com/yourorg/efp/actions/workflows/linux.yml/badge.svg)](https://github.com/yourorg/efp/actions/workflows/linux.yml)
-[![macOS Build](https://github.com/yourorg/efp/actions/workflows/macos.yml/badge.svg)](https://github.com/yourorg/efp/actions/workflows/macos.yml)
-[![Windows Build](https://github.com/yourorg/efp/actions/workflows/windows.yml/badge.svg)](https://github.com/yourorg/efp/actions/workflows/windows.yml)
+[![Linux Build](https://github.com/andersc/new-efp/actions/workflows/linux.yml/badge.svg)](https://github.com/andersc/new-efp/actions/workflows/linux.yml)
+[![macOS Build](https://github.com/andersc/new-efp/actions/workflows/macos.yml/badge.svg)](https://github.com/andersc/new-efp/actions/workflows/macos.yml)
+[![Windows Build](https://github.com/andersc/new-efp/actions/workflows/windows.yml/badge.svg)](https://github.com/andersc/new-efp/actions/workflows/windows.yml)
+
 
 A lightweight, header-only C++20 library for fragmenting and reassembling data over unreliable or size-limited transport layers.
 
