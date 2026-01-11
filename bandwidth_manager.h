@@ -493,6 +493,32 @@ private:
                 }
             }
         }
+        // Additive increase on improving health (NACK-based recovery)
+        else if (aNewHealth < lOldHealth) {
+            mBandwidthIncreases++;
+
+            // Apply additive increase to all streams
+            for (size_t lI = 0; lI < 256; lI++) {
+                if (mManualMultiplier[lI] < 0) {  // Only if not manually set
+                    auto lTarget = getTargetMultiplier((uint8_t)(lI), aNewHealth);
+                    auto lNewMult = mCurrentMultipliers[lI] + mConfig.mAdditiveIncrease;
+                    lNewMult = std::min(lNewMult, lTarget);
+                    lNewMult = std::clamp(lNewMult, mStreamConfigs[lI].mMinMultiplier,
+                                          mStreamConfigs[lI].mMaxMultiplier);
+
+                    if (lNewMult != mCurrentMultipliers[lI]) {
+                        mCurrentMultipliers[lI] = lNewMult;
+                        notifyBandwidthChange((uint8_t)(lI));
+                    }
+
+                    // Un-drop stream if not severe
+                    if (mStreamDropped[lI] && aNewHealth != NetworkHealth::SEVERE) {
+                        mStreamDropped[lI] = false;
+                        mDropCallback((uint8_t)(lI), false);
+                    }
+                }
+            }
+        }
 
         // Reset recovery tracking on health change
         mStableRttSamples = 0;
