@@ -217,6 +217,81 @@ auto lReceiver = efp::makeReceiver(
 - `aHolTimeoutMs >= aTimeoutMs` (HOL must be less than frame timeout)
 - `aNackIntervalMs * aMaxNackRetries >= aTimeoutMs` (NACK budget must fit in timeout)
 
+#### Bandwidth Management (Optional)
+
+For congestion-aware streaming with per-stream bandwidth controls, include `bandwidth_manager.h`:
+
+```cpp
+#include "bandwidth_manager.h"
+
+auto lBwManager = efp::makeBandwidthManager(
+    1400,                    // MTU
+    sendCallback,            // Send callback (same as makeSender)
+    [](uint8_t streamId, float multiplier) {
+        // Adjust encoder bitrate: newBitrate = baseBitrate * multiplier
+        adjustEncoderBitrate(streamId, multiplier);
+    },
+    [](uint8_t streamId, bool dropped) {
+        // Stream dropped/restored (severe congestion)
+        if (dropped) pauseEncoder(streamId);
+        else resumeEncoder(streamId);
+    },
+    efp::SubFragmentMode::SINGLE,
+    1000                     // 1 second retention for retransmit
+);
+
+// Configure per-stream policies
+efp::StreamBandwidthConfig lVideoConfig;
+lVideoConfig.mMinMultiplier = 0.3f;        // Can reduce to 30% of base bitrate
+lVideoConfig.mMaxMultiplier = 1.0f;        // Max 100%
+lVideoConfig.mDropOnSevereCongestion = true;  // Drop video on severe congestion
+lVideoConfig.mPriority = 100;              // Lower priority than audio
+
+efp::StreamBandwidthConfig lAudioConfig;
+lAudioConfig.mMinMultiplier = 1.0f;        // Fixed bandwidth
+lAudioConfig.mDropOnSevereCongestion = false; // Never drop audio
+lAudioConfig.mPriority = 200;              // Higher priority
+
+lBwManager.setStreamConfig(VIDEO_STREAM_ID, lVideoConfig);
+lBwManager.setStreamConfig(AUDIO_STREAM_ID, lAudioConfig);
+
+// Send data through manager
+lBwManager.send(videoFrame, payloadType, pts, dts, code, VIDEO_STREAM_ID);
+
+// Call update() periodically (every ~50ms) to evaluate network health
+lBwManager.update();
+
+// Query current state
+float multiplier = lBwManager.getCurrentMultiplier(VIDEO_STREAM_ID);
+efp::NetworkHealth health = lBwManager.getNetworkHealth();
+```
+
+**Network Health States:**
+| State | Multiplier | Description |
+|-------|------------|-------------|
+| HEALTHY | 1.0 | Normal operation, full bandwidth |
+| DEGRADED | 0.7 | Minor congestion detected |
+| CONGESTED | 0.5 | Significant congestion |
+| SEVERE | mMinMultiplier | Critical congestion, may drop streams |
+
+**Congestion Detection**: Uses hybrid approach combining:
+- **Delay-based**: Jitter threshold monitoring (proactive, detects before loss)
+- **NACK-based**: NACK rate monitoring (reactive, responds to actual loss)
+
+**RTT Probing**: For bandwidth restoration, send RTT probes during recovery:
+```cpp
+// Sender side: periodically send probe
+auto probeData = lBwManager.buildRttProbe();
+sendToReceiver(probeData);
+
+// Receiver side: respond to probe
+auto responseData = efp::BandwidthManager<...>::buildRttResponse(probeData);
+sendToSender(responseData);
+
+// Sender side: process response
+lBwManager.processRttResponse(responseData);
+```
+
 ### SuperFrame (received data)
 
 ```cpp
@@ -407,6 +482,23 @@ The project passes clang-tidy with the recommended "Quick Code Quality Check" co
 MIT License - See [LICENSE](LICENSE) for details.
 
 ## Changelog
+
+### v1.2.0 - Bandwidth Management
+
+**New Features:**
+- **BandwidthManager class** — Congestion-aware streaming wrapper with per-stream bandwidth controls
+- **Hybrid congestion detection** — Combines delay-based (jitter) and NACK-based detection
+- **Per-stream policies** — Configure min/max multipliers, drop behavior, and priorities per stream
+- **RTT probing** — New Type0 subtypes (RTT_PROBE=0x02, RTT_RESPONSE=0x03) for bandwidth restoration
+- **AIMD algorithm** — Additive Increase, Multiplicative Decrease for bandwidth adaptation
+- **`makeBandwidthManager()` factory** — Creates BandwidthManager with automatic type deduction
+
+**New Files:**
+- `bandwidth_manager.h` — BandwidthManager class implementation
+
+**Internal Changes:**
+- Added `FrameType0RttProbe` (12 bytes) and `FrameType0RttResponse` (20 bytes) structures
+- Extended `Type0Subtype` enum with `RTT_PROBE` and `RTT_RESPONSE`
 
 ### v1.1.0 - Template-Based Callbacks
 

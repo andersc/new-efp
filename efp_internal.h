@@ -33,10 +33,12 @@ enum class FrameType : uint8_t {
 };
 
 // Type0 subtypes for signaling frames
-// Registry: 0x00 = reserved, 0x01 = NACK, 0x02-0xFF = future use
+// Registry: 0x00 = reserved, 0x01 = NACK, 0x02 = RTT_PROBE, 0x03 = RTT_RESPONSE
 enum class Type0Subtype : uint8_t {
-    RESERVED = 0x00,  // Do not use
-    NACK     = 0x01   // Negative acknowledgment for retransmit requests
+    RESERVED     = 0x00,  // Do not use
+    NACK         = 0x01,  // Negative acknowledgment for retransmit requests
+    RTT_PROBE    = 0x02,  // RTT probe: Sender → Receiver
+    RTT_RESPONSE = 0x03   // RTT response: Receiver → Sender
 };
 
 // Flags (4 MSB of first byte)
@@ -136,6 +138,31 @@ struct EFP_PACKED_STRUCT FrameType0Nack {
 };
 EFP_PACKED_END
 static_assert(sizeof(FrameType0Nack) == 3, "FrameType0Nack header must be 3 bytes");
+
+// Type0 RTT Probe: Sent by sender to measure round-trip time - 12 bytes
+// Used for bandwidth restoration in BandwidthManager
+EFP_PACKED_BEGIN
+struct EFP_PACKED_STRUCT FrameType0RttProbe {
+    uint8_t  mFrameType   = (uint8_t)(FrameType::TYPE0);  // Frame type + flags
+    uint8_t  mSubtype     = (uint8_t)(Type0Subtype::RTT_PROBE);  // Type0 subtype
+    uint16_t mSequenceNo  = 0;       // Probe sequence number
+    uint64_t mTimestampUs = 0;       // Sender timestamp (microseconds since epoch)
+};
+EFP_PACKED_END
+static_assert(sizeof(FrameType0RttProbe) == 12, "FrameType0RttProbe must be 12 bytes");
+
+// Type0 RTT Response: Sent by receiver in response to RTT probe - 20 bytes
+// Echoes the probe timestamp for RTT calculation
+EFP_PACKED_BEGIN
+struct EFP_PACKED_STRUCT FrameType0RttResponse {
+    uint8_t  mFrameType     = (uint8_t)(FrameType::TYPE0);  // Frame type + flags
+    uint8_t  mSubtype       = (uint8_t)(Type0Subtype::RTT_RESPONSE);  // Type0 subtype
+    uint16_t mSequenceNo    = 0;       // Echo probe sequence number
+    uint64_t mTimestampUs   = 0;       // Original sender timestamp
+    uint64_t mReceiverTimeUs = 0;      // Receiver's local time (for one-way delay calc)
+};
+EFP_PACKED_END
+static_assert(sizeof(FrameType0RttResponse) == 20, "FrameType0RttResponse must be 20 bytes");
 
 // Helper to extract frame type from first byte
 [[nodiscard]] constexpr FrameType getFrameType(uint8_t aFirstByte) noexcept {

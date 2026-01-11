@@ -72,6 +72,7 @@ if(EFP_BUILD_TESTS)
         tests/test_embedded_data.cpp
         tests/test_bundle.cpp
         tests/test_nack.cpp
+        tests/test_bandwidth_manager.cpp
     )
 
     target_link_libraries(efp_tests PRIVATE
@@ -130,6 +131,7 @@ install(FILES
     efp_internal.h
     efp_media_types.h
     efp_c_api.h
+    bandwidth_manager.h
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/efp
 )
 
