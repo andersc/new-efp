@@ -22,7 +22,7 @@ struct SendCallbackWrapper {
     void* mpCtx = nullptr;
 
     void operator()(std::span<const uint8_t> aData, uint8_t aStreamId) const {
-        if (mpCallback) {
+        if (mpCallback != nullptr) {
             mpCallback(aData.data(), aData.size(), aStreamId, mpCtx);
         }
     }
@@ -57,6 +57,7 @@ struct efp_sender_s {
     std::unique_ptr<CSender> mpSender;
     efp_send_callback_t mCallback = nullptr;
     void* mpCtx = nullptr;
+    uint16_t mMtu = 1456;
 };
 
 struct efp_receiver_s {
@@ -69,7 +70,7 @@ struct efp_receiver_s {
 
 // Implementation of NackCallbackWrapper::operator() (needs efp_receiver_s definition)
 void NackCallbackWrapper::operator()(std::span<const uint8_t> aData) const {
-    if (!mpReceiver || !mpReceiver->mNackCallback) {
+    if (mpReceiver == nullptr || mpReceiver->mNackCallback == nullptr) {
         return;
     }
     // Use stream ID 0 for NACK messages
@@ -78,7 +79,7 @@ void NackCallbackWrapper::operator()(std::span<const uint8_t> aData) const {
 
 // Implementation of ReceiveCallbackWrapper::operator() (needs efp_receiver_s definition)
 void ReceiveCallbackWrapper::operator()(efp::SuperFramePtr apFrame) const {
-    if (!mpReceiver || !mpReceiver->mCallback || !apFrame) {
+    if (mpReceiver == nullptr || mpReceiver->mCallback == nullptr || apFrame == nullptr) {
         return;
     }
 
@@ -159,9 +160,10 @@ uint16_t efp_version(void) {
 efp_sender_t efp_sender_create(uint16_t aMtu) {
     try {
         auto* lpSender = new efp_sender_s();
+        lpSender->mMtu = aMtu;
         // Create sender with a placeholder callback wrapper
         // The actual callback will be set later via efp_sender_set_callback
-        SendCallbackWrapper lWrapper{nullptr, nullptr};
+        SendCallbackWrapper lWrapper{.mpCallback = nullptr, .mpCtx = nullptr};
         lpSender->mpSender = std::make_unique<CSender>(aMtu, lWrapper);
         return lpSender;
     } catch (...) {
@@ -172,9 +174,10 @@ efp_sender_t efp_sender_create(uint16_t aMtu) {
 efp_sender_t efp_sender_create_with_callback(uint16_t aMtu, efp_send_callback_t aCallback, void* apCtx) {
     try {
         auto* lpSender = new efp_sender_s();
+        lpSender->mMtu = aMtu;
         lpSender->mCallback = aCallback;
         lpSender->mpCtx = apCtx;
-        SendCallbackWrapper lWrapper{aCallback, apCtx};
+        SendCallbackWrapper lWrapper{.mpCallback = aCallback, .mpCtx = apCtx};
         lpSender->mpSender = std::make_unique<CSender>(aMtu, lWrapper);
         return lpSender;
     } catch (...) {
@@ -183,13 +186,11 @@ efp_sender_t efp_sender_create_with_callback(uint16_t aMtu, efp_send_callback_t 
 }
 
 void efp_sender_destroy(efp_sender_t apSender) {
-    if (apSender) {
-        delete apSender;
-    }
+    delete apSender;
 }
 
 void efp_sender_set_callback(efp_sender_t apSender, efp_send_callback_t aCallback, void* apCtx) {
-    if (!apSender) {
+    if (apSender == nullptr) {
         return;
     }
 
@@ -198,9 +199,8 @@ void efp_sender_set_callback(efp_sender_t apSender, efp_send_callback_t aCallbac
     apSender->mpCtx = apCtx;
 
     // Recreate sender with new callback (since callbacks are construction-time)
-    auto lMtu = apSender->mpSender ? 1456 : 1456;  // Default MTU if needed
-    SendCallbackWrapper lWrapper{aCallback, apCtx};
-    apSender->mpSender = std::make_unique<CSender>(lMtu, lWrapper);
+    SendCallbackWrapper lWrapper{.mpCallback = aCallback, .mpCtx = apCtx};
+    apSender->mpSender = std::make_unique<CSender>(apSender->mMtu, lWrapper);
 }
 
 int16_t efp_sender_send(efp_sender_t apSender,
@@ -210,7 +210,7 @@ int16_t efp_sender_send(efp_sender_t apSender,
                         uint32_t aPayloadCode,
                         uint8_t aStreamId,
                         uint8_t aFlags) {
-    if (!apSender || !apSender->mpSender) {
+    if (apSender == nullptr || apSender->mpSender == nullptr) {
         return EFP_INVALID_PARAMETER;
     }
 
@@ -271,8 +271,8 @@ efp_receiver_t efp_receiver_create_with_callback(uint32_t aTimeoutMs, uint32_t a
 }
 
 void efp_receiver_destroy(efp_receiver_t apReceiver) {
-    if (apReceiver) {
-        if (apReceiver->mpReceiver) {
+    if (apReceiver != nullptr) {
+        if (apReceiver->mpReceiver != nullptr) {
             apReceiver->mpReceiver->stop();
         }
         delete apReceiver;
@@ -281,7 +281,7 @@ void efp_receiver_destroy(efp_receiver_t apReceiver) {
 
 void efp_receiver_set_callback(efp_receiver_t apReceiver,
                                 efp_receive_callback_t aCallback, void* apCtx) {
-    if (!apReceiver) {
+    if (apReceiver == nullptr) {
         return;
     }
 
@@ -292,7 +292,7 @@ void efp_receiver_set_callback(efp_receiver_t apReceiver,
 
 void efp_receiver_set_embedded_callback(efp_receiver_t apReceiver,
                                          efp_embedded_callback_t aCallback, void* apCtx) {
-    if (!apReceiver) {
+    if (apReceiver == nullptr) {
         return;
     }
     apReceiver->mEmbeddedCallback = aCallback;
@@ -303,7 +303,7 @@ void efp_receiver_set_embedded_callback(efp_receiver_t apReceiver,
 int16_t efp_receiver_receive(efp_receiver_t apReceiver,
                               const uint8_t* apData, size_t aSize,
                               uint8_t aSourceId) {
-    if (!apReceiver || !apReceiver->mpReceiver) {
+    if (apReceiver == nullptr || apReceiver->mpReceiver == nullptr) {
         return EFP_INVALID_PARAMETER;
     }
 
@@ -312,13 +312,13 @@ int16_t efp_receiver_receive(efp_receiver_t apReceiver,
 }
 
 void efp_receiver_poll(efp_receiver_t apReceiver) {
-    if (apReceiver && apReceiver->mpReceiver) {
+    if (apReceiver != nullptr && apReceiver->mpReceiver != nullptr) {
         apReceiver->mpReceiver->poll();
     }
 }
 
 void efp_receiver_stop(efp_receiver_t apReceiver) {
-    if (apReceiver && apReceiver->mpReceiver) {
+    if (apReceiver != nullptr && apReceiver->mpReceiver != nullptr) {
         apReceiver->mpReceiver->stop();
     }
 }
@@ -340,13 +340,13 @@ size_t efp_add_embedded_data(uint8_t* apDst,
                               uint8_t aIsLast) {
     auto lTotalSize = efp_embedded_calc_size(aEmbeddedSize, aPayloadSize);
 
-    if (!apDst) {
+    if (apDst == nullptr) {
         return lTotalSize;  // Return required size
     }
 
     // Build embedded header
     auto lTypeByte = aType;
-    if (aIsLast) {
+    if (aIsLast != 0) {
         lTypeByte |= EFP_EMBEDDED_LAST;
     }
 
@@ -355,12 +355,12 @@ size_t efp_add_embedded_data(uint8_t* apDst,
     apDst[2] = (aEmbeddedSize >> 8) & 0xFF;
 
     // Copy embedded data
-    if (apEmbeddedData && aEmbeddedSize > 0) {
+    if (apEmbeddedData != nullptr && aEmbeddedSize > 0) {
         std::memcpy(apDst + 3, apEmbeddedData, aEmbeddedSize);
     }
 
     // Copy payload
-    if (apPayloadData && aPayloadSize > 0) {
+    if (apPayloadData != nullptr && aPayloadSize > 0) {
         std::memcpy(apDst + 3 + aEmbeddedSize, apPayloadData, aPayloadSize);
     }
 
@@ -370,17 +370,17 @@ size_t efp_add_embedded_data(uint8_t* apDst,
 int16_t efp_extract_embedded_data(const uint8_t* apFrameData, size_t aFrameSize,
                                    uint8_t* apEmbeddedOut, size_t* apEmbeddedSizeOut,
                                    uint8_t* apTypeOut, size_t* apPayloadOffsetOut) {
-    if (!apFrameData || aFrameSize < 3) {
+    if (apFrameData == nullptr || aFrameSize < 3) {
         return EFP_INVALID_PARAMETER;
     }
 
     auto lType = apFrameData[0];
     if (lType == 0) {
         // No embedded data
-        if (apPayloadOffsetOut) {
+        if (apPayloadOffsetOut != nullptr) {
             *apPayloadOffsetOut = 0;
         }
-        if (apEmbeddedSizeOut) {
+        if (apEmbeddedSizeOut != nullptr) {
             *apEmbeddedSizeOut = 0;
         }
         return EFP_OK;
@@ -392,19 +392,19 @@ int16_t efp_extract_embedded_data(const uint8_t* apFrameData, size_t aFrameSize,
         return EFP_BUFFER_OUT_OF_BOUNDS;
     }
 
-    if (apTypeOut) {
+    if (apTypeOut != nullptr) {
         *apTypeOut = lType & 0x7F;  // Remove last flag
     }
 
-    if (apEmbeddedSizeOut) {
+    if (apEmbeddedSizeOut != nullptr) {
         *apEmbeddedSizeOut = lEmbSize;
     }
 
-    if (apEmbeddedOut && lEmbSize > 0) {
+    if (apEmbeddedOut != nullptr && lEmbSize > 0) {
         std::memcpy(apEmbeddedOut, apFrameData + 3, lEmbSize);
     }
 
-    if (apPayloadOffsetOut) {
+    if (apPayloadOffsetOut != nullptr) {
         *apPayloadOffsetOut = 3 + lEmbSize;
     }
 
@@ -419,7 +419,7 @@ uint64_t efp_init_send(uint64_t aMtu,
                        void (*aCallback)(const uint8_t*, size_t, uint8_t, void*),
                        void* apCtx) {
     auto lpSender = efp_sender_create((uint16_t)(aMtu));
-    if (!lpSender) {
+    if (lpSender == nullptr) {
         return 0;
     }
 
@@ -438,7 +438,7 @@ uint64_t efp_init_receive(uint32_t aBucketTimeout, uint32_t aHolTimeout,
                           void* apCtx,
                           uint32_t aMode) {
     auto lpReceiver = efp_receiver_create(aBucketTimeout, aHolTimeout, aMode);
-    if (!lpReceiver) {
+    if (lpReceiver == nullptr) {
         return 0;
     }
 

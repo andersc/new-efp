@@ -15,7 +15,6 @@
 static_assert(sizeof(void*) == 8, "EFP requires a 64-bit system");
 
 #include <cstdint>
-#include <cstddef>
 #include <cstring>
 #include <memory>
 #include <vector>
@@ -30,7 +29,6 @@ static_assert(sizeof(void*) == 8, "EFP requires a 64-bit system");
 #include <span>
 #include <bit>
 #include <concepts>
-#include <type_traits>
 #include <algorithm>
 #include <stdexcept>
 
@@ -264,7 +262,6 @@ public:
                     lReq.mFragmentNo = lFragmentNo;
                     lReq.mStreamId = lEntry.mStreamId;
                     lReq.mDeadlineUs = 0;  // No deadline
-                    lReq.mPriority = 0;
                     lReq.mRetryCount = lIt->second.mRetryCount;
                     mRetransmitQueue.push_back(lReq);
                 }
@@ -547,7 +544,6 @@ private:
 
         auto lSuperFrameNo = mSuperFrameNo++;
         auto lOfFragmentNo = (uint16_t)(lTotalFragments - 1);
-        size_t lDataOffset = 0;
 
         // Determine bundle size based on mode
         auto lBundleSize = (uint8_t)(mSubFragmentMode);
@@ -647,30 +643,83 @@ private:
                                  bool aNeedsType3, size_t aType3DataSize, size_t aType2DataSize,
                                  uint8_t aBundleSize) {
 
-        // Collect all fragments into a temporary list
-        std::vector<std::vector<uint8_t>> lFragments;
-        lFragments.reserve(aOfFragmentNo + 1);
-
         size_t lDataOffset = 0;
 
-        // Build Type1 fragments
-        for (size_t lFragNo = 0; lFragNo < aNumType1Fragments; lFragNo++) {
-            FrameType1 lHeader;
-            lHeader.mFrameType = makeFrameTypeByte(FrameType::TYPE1, aFlags);
-            lHeader.mStreamId = aStreamId;
-            lHeader.mSuperFrameNo = aSuperFrameNo;
-            lHeader.mFragmentNo = (uint16_t)(lFragNo);
-            lHeader.mOfFragmentNo = aOfFragmentNo;
+        // Bundle only Type1 fragments (all same size = MTU).
+        // Type3 and Type2 are sent individually because they have different sizes
+        // and the receiver uses equal-division to parse bundled frame boundaries.
+        {
+            std::vector<std::vector<uint8_t>> lFragments;
+            lFragments.reserve(aNumType1Fragments);
 
-            std::vector<uint8_t> lFrag(mMtu);
-            std::memcpy(lFrag.data(), &lHeader, sizeof(lHeader));
-            std::memcpy(lFrag.data() + sizeof(lHeader), apData + lDataOffset, aType1PayloadSize);
-            lDataOffset += aType1PayloadSize;
+            for (size_t lFragNo = 0; lFragNo < aNumType1Fragments; lFragNo++) {
+                FrameType1 lHeader;
+                lHeader.mFrameType = makeFrameTypeByte(FrameType::TYPE1, aFlags);
+                lHeader.mStreamId = aStreamId;
+                lHeader.mSuperFrameNo = aSuperFrameNo;
+                lHeader.mFragmentNo = (uint16_t)(lFragNo);
+                lHeader.mOfFragmentNo = aOfFragmentNo;
 
-            lFragments.push_back(std::move(lFrag));
+                std::vector<uint8_t> lFrag(mMtu);
+                std::memcpy(lFrag.data(), &lHeader, sizeof(lHeader));
+                std::memcpy(lFrag.data() + sizeof(lHeader), apData + lDataOffset, aType1PayloadSize);
+                lDataOffset += aType1PayloadSize;
+
+                lFragments.push_back(std::move(lFrag));
+            }
+
+            // Send Type1 fragments in bundles
+            size_t lFragIdx = 0;
+            while (lFragIdx < lFragments.size()) {
+                FrameType4 lBundleHeader;
+                lBundleHeader.mFrameType = makeFrameTypeByte(FrameType::TYPE4, aFlags);
+
+                auto lFragsInBundle = std::min((size_t)(aBundleSize), lFragments.size() - lFragIdx);
+
+                // Interleave retransmit only if it is the same size (MTU) as the bundled fragments
+                std::vector<uint8_t> lRetransmitData;
+                auto lHasRetransmit = false;
+                if (!mRetransmitQueue.empty() && lFragsInBundle > 1) {
+                    lHasRetransmit = getRetransmitFragment(lRetransmitData);
+                    if (lHasRetransmit) {
+                        if (lRetransmitData.size() == mMtu) {
+                            lFragsInBundle--;
+                        } else {
+                            // Size mismatch: send retransmit individually instead of bundling
+                            mCallback(std::span<const uint8_t>(lRetransmitData), aStreamId);
+                            lHasRetransmit = false;
+                        }
+                    }
+                }
+
+                lBundleHeader.mFrameCount = (uint8_t)(lFragsInBundle + (lHasRetransmit ? 1 : 0));
+
+                size_t lBundleOffset = 0;
+                std::memcpy(mBundleBuffer.data(), &lBundleHeader, sizeof(lBundleHeader));
+                lBundleOffset += sizeof(lBundleHeader);
+
+                if (lHasRetransmit) {
+                    std::memcpy(mBundleBuffer.data() + lBundleOffset, lRetransmitData.data(), lRetransmitData.size());
+                    lBundleOffset += lRetransmitData.size();
+                }
+
+                for (size_t lI = 0; lI < lFragsInBundle; lI++) {
+                    auto& lFrag = lFragments[lFragIdx + lI];
+
+                    auto lFragNo = (uint16_t)(lFragIdx + lI);
+                    retainFragment(aSuperFrameNo, lFragNo, aStreamId, lFrag.data(), lFrag.size());
+
+                    std::memcpy(mBundleBuffer.data() + lBundleOffset, lFrag.data(), lFrag.size());
+                    lBundleOffset += lFrag.size();
+                    mStatistics.mFragmentsSent++;
+                }
+
+                invokeBundleCallback(lBundleOffset, aStreamId);
+                lFragIdx += lFragsInBundle;
+            }
         }
 
-        // Build Type3 if needed
+        // Send Type3 individually (different size from Type1, cannot be bundled)
         if (aNeedsType3) [[unlikely]] {
             FrameType3 lHeader;
             lHeader.mFrameType = makeFrameTypeByte(FrameType::TYPE3, aFlags);
@@ -679,15 +728,18 @@ private:
             lHeader.mType1PacketSize = (uint16_t)(aType1PayloadSize);
             lHeader.mOfFragmentNo = aOfFragmentNo;
 
-            std::vector<uint8_t> lFrag(sizeof(lHeader) + aType3DataSize);
-            std::memcpy(lFrag.data(), &lHeader, sizeof(lHeader));
-            std::memcpy(lFrag.data() + sizeof(lHeader), apData + lDataOffset, aType3DataSize);
+            std::memcpy(mSendBuffer.data(), &lHeader, sizeof(lHeader));
+            std::memcpy(mSendBuffer.data() + sizeof(lHeader), apData + lDataOffset, aType3DataSize);
             lDataOffset += aType3DataSize;
 
-            lFragments.push_back(std::move(lFrag));
+            auto lTotalSize = sizeof(lHeader) + aType3DataSize;
+            retainFragment(aSuperFrameNo, (uint16_t)(aOfFragmentNo - 1), aStreamId,
+                           mSendBuffer.data(), lTotalSize);
+
+            invokeCallback(lTotalSize, aStreamId);
         }
 
-        // Build Type2 (final fragment)
+        // Send Type2 individually (final fragment with metadata)
         {
             FrameType2 lHeader;
             lHeader.mFrameType = makeFrameTypeByte(FrameType::TYPE2, aFlags);
@@ -701,66 +753,13 @@ private:
             lHeader.mDtsPtsDiff = aDtsPtsDiff;
             lHeader.mPayloadCode = aPayloadCode;
 
-            std::vector<uint8_t> lFrag(sizeof(lHeader) + aType2DataSize);
-            std::memcpy(lFrag.data(), &lHeader, sizeof(lHeader));
-            std::memcpy(lFrag.data() + sizeof(lHeader), apData + lDataOffset, aType2DataSize);
+            std::memcpy(mSendBuffer.data(), &lHeader, sizeof(lHeader));
+            std::memcpy(mSendBuffer.data() + sizeof(lHeader), apData + lDataOffset, aType2DataSize);
 
-            lFragments.push_back(std::move(lFrag));
-        }
+            auto lTotalSize = sizeof(lHeader) + aType2DataSize;
+            retainFragment(aSuperFrameNo, aOfFragmentNo, aStreamId, mSendBuffer.data(), lTotalSize);
 
-        // Now send fragments in bundles
-        size_t lFragIdx = 0;
-        while (lFragIdx < lFragments.size()) {
-            // Build bundle header
-            FrameType4 lBundleHeader;
-            lBundleHeader.mFrameType = makeFrameTypeByte(FrameType::TYPE4, aFlags);
-
-            auto lFragsInBundle = std::min((size_t)(aBundleSize), lFragments.size() - lFragIdx);
-
-            // Check for retransmit fragments to interleave
-            std::vector<uint8_t> lRetransmitData;
-            auto lHasRetransmit = false;
-            if (!mRetransmitQueue.empty() && lFragsInBundle > 1) {
-                lHasRetransmit = getRetransmitFragment(lRetransmitData);
-                if (lHasRetransmit) {
-                    lFragsInBundle--;  // Make room for retransmit
-                }
-            }
-
-            lBundleHeader.mFrameCount = (uint8_t)(lFragsInBundle + (lHasRetransmit ? 1 : 0));
-
-            // Build bundle
-            size_t lBundleOffset = 0;
-            std::memcpy(mBundleBuffer.data(), &lBundleHeader, sizeof(lBundleHeader));
-            lBundleOffset += sizeof(lBundleHeader);
-
-            // Add retransmit fragment first if present
-            if (lHasRetransmit) {
-                std::memcpy(mBundleBuffer.data() + lBundleOffset, lRetransmitData.data(), lRetransmitData.size());
-                lBundleOffset += lRetransmitData.size();
-            }
-
-            // Add current fragments
-            for (size_t lI = 0; lI < lFragsInBundle; lI++) {
-                auto& lFrag = lFragments[lFragIdx + lI];
-
-                // Retain fragment
-                auto lFragNo = (uint16_t)(lFragIdx + lI);
-                // Adjust for Type3 being at ofFragmentNo - 1
-                if (aNeedsType3 && lFragNo == aOfFragmentNo) {
-                    // This is Type2, already at correct index
-                } else if (aNeedsType3 && lFragNo == aOfFragmentNo - 1) {
-                    // This is Type3
-                }
-                retainFragment(aSuperFrameNo, lFragNo, aStreamId, lFrag.data(), lFrag.size());
-
-                std::memcpy(mBundleBuffer.data() + lBundleOffset, lFrag.data(), lFrag.size());
-                lBundleOffset += lFrag.size();
-                mStatistics.mFragmentsSent++;
-            }
-
-            invokeBundleCallback(lBundleOffset, aStreamId);
-            lFragIdx += lFragsInBundle;
+            invokeCallback(lTotalSize, aStreamId);
         }
 
         return Result::OK;
@@ -1192,6 +1191,8 @@ private:
             lpBucket->mFragmentCount = 1;  // First fragment received
             lpBucket->mOfFragmentNo = lpHeader->mOfFragmentNo;
             lpBucket->mFragmentSize = lPayloadSize;
+            lpBucket->mType3Size = 0;
+            lpBucket->mType2Size = 0;
             lpBucket->mPts = UINT64_MAX;
             lpBucket->mDts = UINT64_MAX;
             lpBucket->mFirstArrivalUs = lNow;  // Track first fragment arrival for NACK timing
@@ -1299,6 +1300,7 @@ private:
             lpBucket->mFragmentCount = 1;  // First fragment received
             lpBucket->mOfFragmentNo = lpHeader->mOfFragmentNo;
             lpBucket->mFragmentSize = lpHeader->mType1PacketSize;
+            lpBucket->mType3Size = 0;
             lpBucket->mType2Size = lpHeader->mSizeOfData;  // Store for potential relocation
             lpBucket->mPts = lpHeader->mPts;
             lpBucket->mPayloadType = lpHeader->mPayloadType;
@@ -1448,6 +1450,7 @@ private:
             lpBucket->mOfFragmentNo = lpHeader->mOfFragmentNo;
             lpBucket->mFragmentSize = lpHeader->mType1PacketSize;
             lpBucket->mType3Size = lPayloadSize;  // Store Type3 payload size
+            lpBucket->mType2Size = 0;
             lpBucket->mPts = UINT64_MAX;
             lpBucket->mDts = UINT64_MAX;
             lpBucket->mFirstArrivalUs = lNow;  // Track first fragment arrival for NACK timing
@@ -1556,27 +1559,18 @@ private:
                     if (lOffset + sizeof(FrameType1) > aSize) [[unlikely]] {
                         return Result::FRAME_SIZE_MISMATCH;
                     }
-                    auto* lpType1 = (const FrameType1*)(apData + lOffset);
                     // Type1 frames in bundles are typically full MTU minus header
-                    // We need to calculate based on the remaining data or use a heuristic
-                    // For now, assume uniform fragment sizes within bundle
-                    // The payload size would be (total size - all headers) / frame count
-                    // But actually, we need to peek at the next frame to know where this one ends
+                    // We need to calculate based on the remaining data
                     // For Type1, the payload goes until the next frame header or end of bundle
 
                     // Calculate remaining space for this and subsequent frames
                     auto lRemainingSize = aSize - lOffset;
                     auto lRemainingFrames = lpHeader->mFrameCount - lI;
 
-                    // Try to find the next Type1/Type2/Type3 header
-                    lFrameSize = sizeof(FrameType1);
-                    auto lNextOffset = lOffset + sizeof(FrameType1);
-
-                    // Scan for next valid frame type byte or use remaining divided equally
+                    // Calculate frame size based on remaining frames
                     if (lRemainingFrames > 1) {
                         // Calculate approximate fragment size
-                        auto lApproxFragSize = lRemainingSize / lRemainingFrames;
-                        lFrameSize = lApproxFragSize;
+                        lFrameSize = lRemainingSize / lRemainingFrames;
                     } else {
                         // Last frame takes all remaining
                         lFrameSize = lRemainingSize;

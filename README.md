@@ -525,6 +525,14 @@ auto lSender = efp::makeSender(1400, [](std::span<const uint8_t> data, uint8_t s
 
 ### Previous Changes
 
+- **Removed**: `mPriority` field from `RetransmitRequest` struct - it was unused and priority-based scheduling belongs in application layer (BandwidthManager), not EFP core. The `mDeadlineUs` field already provides time-sensitive prioritization
+- **Fixed**: clang-tidy warnings - implicit bool conversions now use explicit nullptr/comparison checks
+- **Fixed**: Unused variables removed (`lDataOffset`, `lpType1`, `lNextOffset`)
+- **Fixed**: Unused includes removed (`<cstddef>`, `<type_traits>`)
+- **Fixed**: Empty conditional branches removed in bundle fragment handling
+- **Fixed**: Designated initializers used for `SendCallbackWrapper` initialization
+- **Fixed**: Unnecessary null pointer check before delete removed
+- **Fixed**: Conditional with identical branches in `efp_sender_set_callback`
 - **Fixed**: Buffer overflow in `sendFragmented()` when frame data perfectly fits into Type1 fragments but Type1 payload size exceeds Type2 max payload (Type2 has larger header). Now correctly uses Type3 to handle the overflow case
 - **Fixed**: Buffer overflow in `handleType3()` when receiving malformed/garbage packets with oversized payloads. Added bounds check to reject Type3 payloads larger than `mType1PacketSize`
 - **Fixed**: Critical heap corruption in `handleType3()` - when Type3 arrives first, the frame buffer was allocated with wrong size (only accounting for Type3 payload, not Type2). This caused buffer overflow when Type2 data was later copied. Now allocates using upper bound: `mType1PacketSize * (mOfFragmentNo + 1)`
@@ -543,6 +551,9 @@ auto lSender = efp::makeSender(1400, [](std::span<const uint8_t> data, uint8_t s
 - **Fixed**: Test name "Send 100000 superframes" now correctly reflects it sends 50000 superframes
 - **Fixed**: Test "Send 1000000 small frames (endurance)" now actually sends 1 million frames as intended
 - **Added**: `pendingCount()` method to Receiver for debugging/diagnostics
+- **Fixed**: `efp_sender_set_callback` in C API hardcoded MTU to 1456, discarding the MTU passed to `efp_sender_create`. Also affected the legacy `efp_init_send` API. Now stores and reuses the original MTU
+- **Fixed**: Stale `mType3Size`/`mType2Size` in receiver bucket reuse. When a bucket slot was reused for a new superframe, leftover values from the previous occupant caused incorrect data offset and frame size calculations, leading to potential data corruption
+- **Fixed**: Bundle sender (`sendFragmentedBundled`) mixed Type1, Type3, and Type2 frames of different sizes in the same Type4 bundle. The receiver uses equal-division to determine frame boundaries within a bundle, which fails for mixed sizes. Type3 and Type2 are now sent individually outside of bundles
 
 ## Credits
 
