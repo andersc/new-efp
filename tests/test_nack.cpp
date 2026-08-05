@@ -572,12 +572,103 @@ TEST_SUITE("NACK and Retransmission") {
             return !lReceivedNack.empty();
         }, std::chrono::milliseconds(100)));
 
-        // Now deliver the missing fragment (simulating retransmit)
-        (void)lReceiver.receive(std::span<const uint8_t>(lSentFragments[1]), 0);
+        // Exercise the actual retransmit queue and deliver its callback output.
+        lSentFragments.clear();
+        REQUIRE(lSender.processRetransmits() == 1);
+        REQUIRE(lSentFragments.size() == 1);
+        (void)lReceiver.receive(std::span<const uint8_t>(lSentFragments.front()), 0);
 
         // Frame should now be complete
         REQUIRE(waitFor([&]() { return lCompleteReceived.load(); }, std::chrono::milliseconds(200)));
         CHECK(lCompleteReceived.load());
+    }
+
+    TEST_CASE("Repeated NACK does not queue the same fragment twice") {
+        std::vector<std::vector<uint8_t>> lSentFragments;
+        auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
+            lSentFragments.emplace_back(aData.begin(), aData.end());
+        }, efp::SubFragmentMode::SINGLE, 1000);
+
+        std::vector<uint8_t> lPayload(MTU * 3);
+        REQUIRE(lSender.send(lPayload, 1, 1000, 900, 42, 7) == efp::Result::OK);
+
+        std::vector<uint8_t> lNack(sizeof(efp::FrameType0Nack) + sizeof(efp::NackEntry));
+        efp::FrameType0Nack lHeader;
+        lHeader.mNackCount = 1;
+        efp::NackEntry lEntry;
+        lEntry.mStreamId = 7;
+        lEntry.mSuperFrameNo = 0;
+        lEntry.mFragmentNo = 1;
+        std::memcpy(lNack.data(), &lHeader, sizeof(lHeader));
+        std::memcpy(lNack.data() + sizeof(lHeader), &lEntry, sizeof(lEntry));
+
+        CHECK(lSender.receiveNack(lNack) == efp::Result::OK);
+        CHECK(lSender.receiveNack(lNack) == efp::Result::OK);
+        CHECK(lSender.getStatistics().mRetransmitQueueSize == 1);
+        CHECK(lSender.processRetransmits() == 1);
+    }
+
+    TEST_CASE("Maximum 256-fragment NACK range terminates and queues every fragment") {
+        auto lSender = efp::makeSender(MTU, [](std::span<const uint8_t>, uint8_t) {},
+                                       efp::SubFragmentMode::SINGLE, 1000);
+        std::vector<uint8_t> lPayload((MTU - sizeof(efp::FrameType1)) * 300);
+        REQUIRE(lSender.send(lPayload, 1, 1000, 900, 42, 7) == efp::Result::OK);
+
+        std::vector<uint8_t> lNack(sizeof(efp::FrameType0Nack) + sizeof(efp::NackEntry));
+        efp::FrameType0Nack lHeader;
+        lHeader.mNackCount = 1;
+        efp::NackEntry lEntry;
+        lEntry.mStreamId = 7;
+        lEntry.mSuperFrameNo = 0;
+        lEntry.mFragmentNo = 0;
+        lEntry.mFragmentCount = 255;
+        std::memcpy(lNack.data(), &lHeader, sizeof(lHeader));
+        std::memcpy(lNack.data() + sizeof(lHeader), &lEntry, sizeof(lEntry));
+
+        CHECK(lSender.receiveNack(lNack) == efp::Result::OK);
+        CHECK(lSender.getStatistics().mRetransmitQueueSize == 256);
+        CHECK(lSender.processRetransmits() == 256);
+    }
+
+    TEST_CASE("Queued retransmit cannot target a replacement after sequence wrap") {
+        std::vector<std::vector<uint8_t>> lCaptured;
+        bool lCapture = false;
+        auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
+            if (lCapture) lCaptured.emplace_back(aData.begin(), aData.end());
+        }, efp::SubFragmentMode::SINGLE, 60000, 10 * 1024 * 1024);
+
+        std::vector<uint8_t> lOldPayload(MTU * 2, 0x11);
+        REQUIRE(lSender.send(lOldPayload, 1, 1000, 900, 42, 7) == efp::Result::OK);
+
+        std::vector<uint8_t> lNack(sizeof(efp::FrameType0Nack) + sizeof(efp::NackEntry));
+        efp::FrameType0Nack lHeader;
+        lHeader.mNackCount = 1;
+        efp::NackEntry lEntry;
+        lEntry.mStreamId = 7;
+        lEntry.mSuperFrameNo = 0;
+        lEntry.mFragmentNo = 0;
+        std::memcpy(lNack.data(), &lHeader, sizeof(lHeader));
+        std::memcpy(lNack.data() + sizeof(lHeader), &lEntry, sizeof(lEntry));
+        REQUIRE(lSender.receiveNack(lNack) == efp::Result::OK);
+
+        std::vector<uint8_t> lTinyPayload(1, 0x22);
+        for (size_t lI = 0; lI < 65535; ++lI) {
+            REQUIRE(lSender.send(lTinyPayload, 1, 1001 + lI, 901 + lI, 42, 7) == efp::Result::OK);
+        }
+
+        std::vector<uint8_t> lNewPayload(MTU * 2, 0x33);
+        lCapture = true;
+        REQUIRE(lSender.send(lNewPayload, 1, 70000, 69900, 42, 7) == efp::Result::OK);
+        REQUIRE(!lCaptured.empty());
+        auto lExpectedNewFragment = lCaptured.front();
+        lCaptured.clear();
+        lCapture = false;
+
+        REQUIRE(lSender.receiveNack(lNack) == efp::Result::OK);
+        lCapture = true;
+        CHECK(lSender.processRetransmits() == 1);
+        REQUIRE(lCaptured.size() == 1);
+        CHECK(lCaptured.front() == lExpectedNewFragment);
     }
 
     // =========================================================================

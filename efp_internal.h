@@ -105,8 +105,9 @@ EFP_PACKED_END
 static_assert(sizeof(FrameType3) == 8, "FrameType3 must be 8 bytes");
 
 // Type4: Bundle frame - 2 bytes header
-// Contains multiple Type1/Type2/Type3 frames bundled together
-// Used for sub-fragmentation modes (2/4/8 fragments per UDP packet)
+// Contains equal-sized Type1 frames bundled together. Variable-sized Type2 and
+// Type3 frames remain standalone network packets.
+// Used for sub-fragmentation modes (2/4/8 fragments per network packet)
 EFP_PACKED_BEGIN
 struct EFP_PACKED_STRUCT FrameType4 {
     uint8_t mFrameType   = (uint8_t)(FrameType::TYPE4);  // Frame type + flags
@@ -182,4 +183,3 @@ static_assert(sizeof(FrameType0RttResponse) == 20, "FrameType0RttResponse must b
 } // namespace efp
 
 #endif // EFP_INTERNAL_H
-

@@ -19,6 +19,8 @@ static_assert(sizeof(void*) == 8, "EFP requires a 64-bit system");
 #include <memory>
 #include <vector>
 #include <map>
+#include <unordered_map>
+#include <unordered_set>
 #include <bitset>
 #include <mutex>
 #include <atomic>
@@ -43,6 +45,8 @@ constexpr uint16_t VERSION = ((uint16_t)(VERSION_MAJOR) << 8) | VERSION_MINOR;
 
 // Default circular buffer size (must be 2^n - 1 for bitmask operations)
 constexpr uint16_t DEFAULT_BUFFER_SIZE = 8191;
+constexpr size_t MAX_SUPERFRAME_SIZE = 100 * 1024 * 1024;
+constexpr uint16_t MAX_FRAGMENTS_PER_SUPERFRAME = 8192;
 
 // C++20 concept for valid buffer sizes (must be 2^n - 1)
 template<uint16_t N>
@@ -188,15 +192,14 @@ public:
                     SubFragmentMode aSubFragmentMode = SubFragmentMode::SINGLE,
                     uint32_t aRetentionMs = 0,
                     size_t aRetentionMaxBytes = 50 * 1024 * 1024)
-        : mMtu(aMtu), mCallback(std::move(aCallback)),
-          mSubFragmentMode(aSubFragmentMode),
-          mRetentionMs(aRetentionMs), mRetentionMaxBytes(aRetentionMaxBytes) {
+        : mMtu(aMtu), mSubFragmentMode(aSubFragmentMode),
+          mRetentionMs(aRetentionMs), mRetentionMaxBytes(aRetentionMaxBytes),
+          mCallback(std::move(aCallback)) {
         if (mMtu < 256) mMtu = 256;
         mSendBuffer.resize(mMtu);
-        // For bundled mode, we need a larger buffer for the bundle
-        // Account for bundleSize fragments + 1 potential retransmit fragment + header
+        // Type4 bundles are network packets too and must not exceed mMtu.
         if (mSubFragmentMode != SubFragmentMode::SINGLE) {
-            mBundleBuffer.resize((size_t)(mMtu) * ((size_t)((uint8_t)(mSubFragmentMode)) + 1) + sizeof(FrameType4));
+            mBundleBuffer.resize(mMtu);
         }
     }
 
@@ -217,7 +220,7 @@ public:
         auto lStats = mStatistics;
         lStats.mRetentionBufferFragments = (uint32_t)(mRetentionBuffer.size());
         lStats.mRetentionBufferBytes = mRetentionBufferBytes;
-        lStats.mRetransmitQueueSize = (uint32_t)(mRetransmitQueue.size());
+        lStats.mRetransmitQueueSize = (uint32_t)(mQueuedRetransmits.size());
         return lStats;
     }
 
@@ -237,8 +240,9 @@ public:
             return Result::INVALID_PARAMETER;
         }
 
-        auto lExpectedSize = sizeof(FrameType0Nack) + (lpHeader->mNackCount * sizeof(NackEntry));
-        if (aData.size() < lExpectedSize) [[unlikely]] {
+        auto lExpectedSize = sizeof(FrameType0Nack) +
+                             ((size_t)(lpHeader->mNackCount) * sizeof(NackEntry));
+        if (aData.size() != lExpectedSize) [[unlikely]] {
             return Result::FRAME_SIZE_MISMATCH;
         }
 
@@ -249,21 +253,20 @@ public:
         for (uint8_t lI = 0; lI < lpHeader->mNackCount; lI++) {
             auto& lEntry = lpEntries[lI];
 
+            if ((uint32_t)(lEntry.mFragmentNo) + lEntry.mFragmentCount > UINT16_MAX) [[unlikely]] {
+                return Result::BUFFER_OUT_OF_BOUNDS;
+            }
+
             // Process each fragment in the range
-            for (uint8_t lJ = 0; lJ <= lEntry.mFragmentCount; lJ++) {
+            for (uint16_t lJ = 0; lJ <= lEntry.mFragmentCount; lJ++) {
                 auto lFragmentNo = (uint16_t)(lEntry.mFragmentNo + lJ);
                 auto lKey = makeRetentionKey(lEntry.mSuperFrameNo, lFragmentNo);
 
                 auto lIt = mRetentionBuffer.find(lKey);
-                if (lIt != mRetentionBuffer.end()) {
-                    // Add to retransmit queue if not already queued
-                    RetransmitRequest lReq;
-                    lReq.mSuperFrameNo = lEntry.mSuperFrameNo;
-                    lReq.mFragmentNo = lFragmentNo;
-                    lReq.mStreamId = lEntry.mStreamId;
-                    lReq.mDeadlineUs = 0;  // No deadline
-                    lReq.mRetryCount = lIt->second.mRetryCount;
-                    mRetransmitQueue.push_back(lReq);
+                if (lIt != mRetentionBuffer.end() &&
+                    lIt->second.mStreamId == lEntry.mStreamId &&
+                    mQueuedRetransmits.insert(lIt->second.mGeneration).second) {
+                    mRetransmitQueue.push_back({lKey, lIt->second.mGeneration});
                 }
             }
         }
@@ -280,6 +283,9 @@ public:
         if (aData.empty()) [[unlikely]] {
             return Result::INVALID_PARAMETER;
         }
+        if (aData.size() > MAX_SUPERFRAME_SIZE) [[unlikely]] {
+            return Result::TOO_LARGE_FRAME;
+        }
 
         std::lock_guard<std::mutex> lLock(mMutex);
 
@@ -288,7 +294,15 @@ public:
             evictOldRetention();
         }
 
-        auto lType1PayloadSize = mMtu - sizeof(FrameType1);
+        size_t lType1FrameSize = mMtu;
+        if (mSubFragmentMode != SubFragmentMode::SINGLE) {
+            auto lBundleSize = (size_t)((uint8_t)(mSubFragmentMode));
+            lType1FrameSize = (mMtu - sizeof(FrameType4)) / lBundleSize;
+        }
+        if (lType1FrameSize <= sizeof(FrameType1)) [[unlikely]] {
+            return Result::INVALID_PARAMETER;
+        }
+        auto lType1PayloadSize = lType1FrameSize - sizeof(FrameType1);
         auto lType2PayloadSize = mMtu - sizeof(FrameType2);
 
         // Calculate DTS-PTS difference
@@ -326,19 +340,19 @@ public:
 
         size_t lCount = 0;
         while (!mRetransmitQueue.empty() && lCount < aMaxCount) {
-            auto& lReq = mRetransmitQueue.front();
-            auto lKey = makeRetentionKey(lReq.mSuperFrameNo, lReq.mFragmentNo);
+            auto lRequest = mRetransmitQueue.front();
+            mRetransmitQueue.pop_front();
+            mQueuedRetransmits.erase(lRequest.mGeneration);
 
-            auto lIt = mRetentionBuffer.find(lKey);
-            if (lIt != mRetentionBuffer.end()) {
+            auto lIt = mRetentionBuffer.find(lRequest.mKey);
+            if (lIt != mRetentionBuffer.end() &&
+                lIt->second.mGeneration == lRequest.mGeneration) {
                 // Retransmit the fragment
                 mCallback(std::span<const uint8_t>(lIt->second.mData), lIt->second.mStreamId);
                 lIt->second.mRetryCount++;
                 mStatistics.mRetransmittedFragments++;
                 lCount++;
             }
-
-            mRetransmitQueue.erase(mRetransmitQueue.begin());
         }
 
         return lCount;
@@ -347,22 +361,23 @@ public:
 private:
     // Retention buffer entry
     struct RetainedFragment {
-        uint64_t mTimestampUs = 0;       // When fragment was sent
+        int64_t  mTimestampUs = 0;       // When fragment was sent
         uint16_t mSuperFrameNo = 0;      // SuperFrame sequence
         uint16_t mFragmentNo = 0;        // Fragment within SuperFrame
         uint8_t  mStreamId = 0;          // Stream ID
         uint8_t  mRetryCount = 0;        // Times this has been retransmitted
+        uint64_t mGeneration = 0;        // Distinguishes key reuse after sequence wrap
         std::vector<uint8_t> mData;      // Complete fragment data (Type1/2/3 frame)
     };
 
-    // Retransmit request entry
+    struct RetentionOrderEntry {
+        uint32_t mKey = 0;
+        uint64_t mGeneration = 0;
+    };
+
     struct RetransmitRequest {
-        uint16_t mSuperFrameNo = 0;
-        uint16_t mFragmentNo = 0;
-        uint8_t  mStreamId = 0;
-        uint64_t mDeadlineUs = 0;        // When this MUST be sent (0 = no deadline)
-        uint8_t  mPriority = 0;          // Higher = more urgent
-        uint8_t  mRetryCount = 0;        // Times requested
+        uint32_t mKey = 0;
+        uint64_t mGeneration = 0;
     };
 
     [[nodiscard]] static uint32_t makeRetentionKey(uint16_t aSuperFrameNo, uint16_t aFragmentNo) noexcept {
@@ -374,44 +389,51 @@ private:
             std::chrono::steady_clock::now().time_since_epoch()).count();
     }
 
-    void evictOldRetention() {
+    void evictOldRetention(size_t aRequiredBytes = 0) {
         auto lNow = nowUs();
         auto lCutoffUs = lNow - (int64_t)(mRetentionMs) * 1000;
 
-        // Evict by time
-        for (auto lIt = mRetentionBuffer.begin(); lIt != mRetentionBuffer.end(); ) {
-            if (lIt->second.mTimestampUs < lCutoffUs) {
-                mRetentionBufferBytes -= lIt->second.mData.size();
-                lIt = mRetentionBuffer.erase(lIt);
-            } else {
-                ++lIt;
-            }
-        }
+        while (!mRetentionOrder.empty()) {
+            const auto lOldest = mRetentionOrder.front();
+            auto lIt = mRetentionBuffer.find(lOldest.mKey);
 
-        // Evict by size if still over limit
-        while (mRetentionBufferBytes > mRetentionMaxBytes && !mRetentionBuffer.empty()) {
-            // Find oldest entry
-            auto lOldestIt = mRetentionBuffer.begin();
-            for (auto lIt = mRetentionBuffer.begin(); lIt != mRetentionBuffer.end(); ++lIt) {
-                if (lIt->second.mTimestampUs < lOldestIt->second.mTimestampUs) {
-                    lOldestIt = lIt;
-                }
+            // Replaced entries leave a stale ordering record behind.
+            if (lIt == mRetentionBuffer.end() ||
+                lIt->second.mGeneration != lOldest.mGeneration) {
+                mRetentionOrder.pop_front();
+                continue;
             }
-            mRetentionBufferBytes -= lOldestIt->second.mData.size();
-            mRetentionBuffer.erase(lOldestIt);
+
+            auto lExpired = lIt->second.mTimestampUs < lCutoffUs;
+            auto lWouldExceedLimit = aRequiredBytes > mRetentionMaxBytes ||
+                mRetentionBufferBytes > mRetentionMaxBytes - aRequiredBytes;
+            if (!lExpired && !lWouldExceedLimit) {
+                break;
+            }
+
+            mRetentionBufferBytes -= lIt->second.mData.size();
+            mRetentionBuffer.erase(lIt);
+            mQueuedRetransmits.erase(lOldest.mGeneration);
+            mRetentionOrder.pop_front();
         }
     }
 
     void retainFragment(uint16_t aSuperFrameNo, uint16_t aFragmentNo, uint8_t aStreamId,
                         const uint8_t* apData, size_t aSize) {
-        if (mRetentionMs == 0) return;
+        if (mRetentionMs == 0 || aSize > mRetentionMaxBytes) return;
 
         auto lKey = makeRetentionKey(aSuperFrameNo, aFragmentNo);
+        auto lExisting = mRetentionBuffer.find(lKey);
+        auto lExistingSize = lExisting == mRetentionBuffer.end()
+            ? (size_t)(0)
+            : lExisting->second.mData.size();
+        evictOldRetention(aSize > lExistingSize ? aSize - lExistingSize : 0);
 
         // If key already exists, subtract old size first
-        auto lExisting = mRetentionBuffer.find(lKey);
+        lExisting = mRetentionBuffer.find(lKey);
         if (lExisting != mRetentionBuffer.end()) {
             mRetentionBufferBytes -= lExisting->second.mData.size();
+            mQueuedRetransmits.erase(lExisting->second.mGeneration);
         }
 
         RetainedFragment lFrag;
@@ -420,10 +442,12 @@ private:
         lFrag.mFragmentNo = aFragmentNo;
         lFrag.mStreamId = aStreamId;
         lFrag.mRetryCount = 0;
+        lFrag.mGeneration = ++mRetentionGeneration;
         lFrag.mData.assign(apData, apData + aSize);
 
         mRetentionBufferBytes += aSize;
         mRetentionBuffer[lKey] = std::move(lFrag);
+        mRetentionOrder.push_back({lKey, mRetentionBuffer[lKey].mGeneration});
     }
 
     void invokeCallback(size_t aSize, uint8_t aStreamId) {
@@ -437,23 +461,23 @@ private:
     }
 
     // Check if we should process retransmits and get one if available
-    bool getRetransmitFragment(std::vector<uint8_t>& rData) {
+    bool getRetransmitFragment(std::vector<uint8_t>& rData, uint8_t& rStreamId) {
         if (mRetransmitQueue.empty()) return false;
 
-        auto& lReq = mRetransmitQueue.front();
-        auto lKey = makeRetentionKey(lReq.mSuperFrameNo, lReq.mFragmentNo);
+        auto lRequest = mRetransmitQueue.front();
+        mRetransmitQueue.pop_front();
+        mQueuedRetransmits.erase(lRequest.mGeneration);
 
-        auto lIt = mRetentionBuffer.find(lKey);
-        if (lIt == mRetentionBuffer.end()) {
-            // Fragment no longer in retention buffer, skip
-            mRetransmitQueue.erase(mRetransmitQueue.begin());
+        auto lIt = mRetentionBuffer.find(lRequest.mKey);
+        if (lIt == mRetentionBuffer.end() ||
+            lIt->second.mGeneration != lRequest.mGeneration) {
             return false;
         }
 
         rData = lIt->second.mData;
+        rStreamId = lIt->second.mStreamId;
         lIt->second.mRetryCount++;
         mStatistics.mRetransmittedFragments++;
-        mRetransmitQueue.erase(mRetransmitQueue.begin());
         return true;
     }
 
@@ -498,7 +522,7 @@ private:
         auto lRemainingAfterType1s = aSize % aType1PayloadSize;
         auto lNumType1Fragments = aSize / aType1PayloadSize;
 
-        uint16_t lTotalFragments;
+        size_t lTotalFragments;
         auto lNeedsType3 = false;
         size_t lType2DataSize;
         size_t lType3DataSize = 0;
@@ -509,13 +533,13 @@ private:
             auto lType2MaxPayload = mMtu - lType2HeaderSize;
             if (aType1PayloadSize <= lType2MaxPayload) {
                 // Type1 payload fits in Type2
-                lTotalFragments = (uint16_t)(lNumType1Fragments);
+                lTotalFragments = lNumType1Fragments;
                 lType2DataSize = aType1PayloadSize;
                 lNumType1Fragments--;
             } else {
                 // Type1 payload is too large for Type2, need Type3 for overflow
                 lNeedsType3 = true;
-                lTotalFragments = (uint16_t)(lNumType1Fragments + 1);
+                lTotalFragments = lNumType1Fragments + 1;
                 // Last Type1's worth of data needs to be split between Type3 and Type2
                 lType3DataSize = aType1PayloadSize - lType2MaxPayload;
                 lType2DataSize = lType2MaxPayload;
@@ -523,12 +547,12 @@ private:
             }
         } else if (lRemainingAfterType1s <= (mMtu - lType2HeaderSize)) {
             // Remainder fits in Type2
-            lTotalFragments = (uint16_t)(lNumType1Fragments + 1);
+            lTotalFragments = lNumType1Fragments + 1;
             lType2DataSize = lRemainingAfterType1s;
         } else {
             // Need Type3 for overflow
             lNeedsType3 = true;
-            lTotalFragments = (uint16_t)(lNumType1Fragments + 2);
+            lTotalFragments = lNumType1Fragments + 2;
             lType3DataSize = aType1PayloadSize;  // Type3 carries full fragment
             lType2DataSize = lRemainingAfterType1s - aType1PayloadSize + (mMtu - lType2HeaderSize);
             // Recalculate: remaining split between Type3 and Type2
@@ -540,6 +564,10 @@ private:
                 }
                 lType2DataSize = lRemainingAfterType1s - lType3DataSize;
             }
+        }
+
+        if (lTotalFragments == 0 || lTotalFragments > MAX_FRAGMENTS_PER_SUPERFRAME) [[unlikely]] {
+            return Result::TOO_LARGE_FRAME;
         }
 
         auto lSuperFrameNo = mSuperFrameNo++;
@@ -563,7 +591,7 @@ private:
                                      lNeedsType3, lType3DataSize, lType2DataSize, lBundleSize);
     }
 
-    Result sendFragmentedSingle(const uint8_t* apData, size_t aSize,
+    Result sendFragmentedSingle(const uint8_t* apData, size_t /*aSize*/,
                                 uint8_t aPayloadType, uint64_t aPts, uint32_t aDtsPtsDiff,
                                 uint32_t aPayloadCode, uint8_t aStreamId, uint8_t aFlags,
                                 size_t aType1PayloadSize, uint16_t aSuperFrameNo,
@@ -635,7 +663,7 @@ private:
         return Result::OK;
     }
 
-    Result sendFragmentedBundled(const uint8_t* apData, size_t aSize,
+    Result sendFragmentedBundled(const uint8_t* apData, size_t /*aSize*/,
                                  uint8_t aPayloadType, uint64_t aPts, uint32_t aDtsPtsDiff,
                                  uint32_t aPayloadCode, uint8_t aStreamId, uint8_t aFlags,
                                  size_t aType1PayloadSize, uint16_t aSuperFrameNo,
@@ -645,48 +673,30 @@ private:
 
         size_t lDataOffset = 0;
 
-        // Bundle only Type1 fragments (all same size = MTU).
+        // Bundle only equal-sized Type1 fragments. The inner size is selected so
+        // the Type4 header plus a full bundle never exceeds the configured MTU.
         // Type3 and Type2 are sent individually because they have different sizes
         // and the receiver uses equal-division to parse bundled frame boundaries.
         {
-            std::vector<std::vector<uint8_t>> lFragments;
-            lFragments.reserve(aNumType1Fragments);
-
-            for (size_t lFragNo = 0; lFragNo < aNumType1Fragments; lFragNo++) {
-                FrameType1 lHeader;
-                lHeader.mFrameType = makeFrameTypeByte(FrameType::TYPE1, aFlags);
-                lHeader.mStreamId = aStreamId;
-                lHeader.mSuperFrameNo = aSuperFrameNo;
-                lHeader.mFragmentNo = (uint16_t)(lFragNo);
-                lHeader.mOfFragmentNo = aOfFragmentNo;
-
-                std::vector<uint8_t> lFrag(mMtu);
-                std::memcpy(lFrag.data(), &lHeader, sizeof(lHeader));
-                std::memcpy(lFrag.data() + sizeof(lHeader), apData + lDataOffset, aType1PayloadSize);
-                lDataOffset += aType1PayloadSize;
-
-                lFragments.push_back(std::move(lFrag));
-            }
-
-            // Send Type1 fragments in bundles
             size_t lFragIdx = 0;
-            while (lFragIdx < lFragments.size()) {
+            auto lType1FrameSize = sizeof(FrameType1) + aType1PayloadSize;
+            while (lFragIdx < aNumType1Fragments) {
                 FrameType4 lBundleHeader;
                 lBundleHeader.mFrameType = makeFrameTypeByte(FrameType::TYPE4, aFlags);
 
-                auto lFragsInBundle = std::min((size_t)(aBundleSize), lFragments.size() - lFragIdx);
+                auto lFragsInBundle = std::min((size_t)(aBundleSize), aNumType1Fragments - lFragIdx);
 
-                // Interleave retransmit only if it is the same size (MTU) as the bundled fragments
+                // Only equal-sized Type1 retransmits can be placed in this bundle.
                 std::vector<uint8_t> lRetransmitData;
+                uint8_t lRetransmitStreamId = 0;
                 auto lHasRetransmit = false;
                 if (!mRetransmitQueue.empty() && lFragsInBundle > 1) {
-                    lHasRetransmit = getRetransmitFragment(lRetransmitData);
+                    lHasRetransmit = getRetransmitFragment(lRetransmitData, lRetransmitStreamId);
                     if (lHasRetransmit) {
-                        if (lRetransmitData.size() == mMtu) {
+                        if (lRetransmitData.size() == lType1FrameSize) {
                             lFragsInBundle--;
                         } else {
-                            // Size mismatch: send retransmit individually instead of bundling
-                            mCallback(std::span<const uint8_t>(lRetransmitData), aStreamId);
+                            mCallback(std::span<const uint8_t>(lRetransmitData), lRetransmitStreamId);
                             lHasRetransmit = false;
                         }
                     }
@@ -704,13 +714,23 @@ private:
                 }
 
                 for (size_t lI = 0; lI < lFragsInBundle; lI++) {
-                    auto& lFrag = lFragments[lFragIdx + lI];
-
                     auto lFragNo = (uint16_t)(lFragIdx + lI);
-                    retainFragment(aSuperFrameNo, lFragNo, aStreamId, lFrag.data(), lFrag.size());
+                    FrameType1 lHeader;
+                    lHeader.mFrameType = makeFrameTypeByte(FrameType::TYPE1, aFlags);
+                    lHeader.mStreamId = aStreamId;
+                    lHeader.mSuperFrameNo = aSuperFrameNo;
+                    lHeader.mFragmentNo = lFragNo;
+                    lHeader.mOfFragmentNo = aOfFragmentNo;
 
-                    std::memcpy(mBundleBuffer.data() + lBundleOffset, lFrag.data(), lFrag.size());
-                    lBundleOffset += lFrag.size();
+                    auto* lpFragment = mBundleBuffer.data() + lBundleOffset;
+                    std::memcpy(lpFragment, &lHeader, sizeof(lHeader));
+                    std::memcpy(lpFragment + sizeof(lHeader),
+                                apData + lDataOffset, aType1PayloadSize);
+                    retainFragment(aSuperFrameNo, lFragNo, aStreamId,
+                                   lpFragment, lType1FrameSize);
+
+                    lDataOffset += aType1PayloadSize;
+                    lBundleOffset += lType1FrameSize;
                     mStatistics.mFragmentsSent++;
                 }
 
@@ -774,8 +794,11 @@ private:
     mutable std::mutex mMutex;
     std::vector<uint8_t> mSendBuffer;
     std::vector<uint8_t> mBundleBuffer;
-    std::map<uint32_t, RetainedFragment> mRetentionBuffer;
-    std::vector<RetransmitRequest> mRetransmitQueue;
+    std::unordered_map<uint32_t, RetainedFragment> mRetentionBuffer;
+    std::deque<RetentionOrderEntry> mRetentionOrder;
+    std::deque<RetransmitRequest> mRetransmitQueue;
+    std::unordered_set<uint64_t> mQueuedRetransmits;
+    uint64_t mRetentionGeneration = 0;
     SenderStatistics mStatistics;
     SendCallbackT mCallback;
 };
@@ -905,6 +928,7 @@ public:
 
     // Get number of pending (incomplete) frames in the bucket map
     [[nodiscard]] size_t pendingCount() const {
+        std::lock_guard<std::recursive_mutex> lLock(mNetMutex);
         return mBucketMap.size();
     }
 
@@ -949,7 +973,7 @@ private:
         int64_t  mTimeoutUs      = 0;
         uint16_t mFragmentCount  = 0;
         uint16_t mOfFragmentNo   = 0;
-        uint64_t mDeliveryOrder  = UINT64_MAX;
+        int64_t  mDeliveryOrder  = INT64_MAX;
         size_t   mFragmentSize   = 0;
         size_t   mType3Size      = 0;  // Size of Type3 payload (0 if no Type3)
         size_t   mType2Size      = 0;  // Size of Type2 payload (for relocation if Type3 arrives after)
@@ -1120,7 +1144,7 @@ private:
         }
     }
 
-    [[nodiscard]] uint64_t recalculateSuperFrameNo(uint16_t aFrameNo) noexcept {
+    [[nodiscard]] int64_t recalculateSuperFrameNo(uint16_t aFrameNo) noexcept {
         if (mFirstFrame) [[unlikely]] {
             mOldFrameNo = aFrameNo;
             mFrameNoRecalc = aFrameNo;
@@ -1173,10 +1197,11 @@ private:
             }
 
             // Sanity check on total size to prevent huge allocations
-            auto lTotalSize = lPayloadSize * ((size_t)(lpHeader->mOfFragmentNo) + 1);
-            if (lTotalSize > 100 * 1024 * 1024) [[unlikely]] {  // 100MB max
+            auto lFragmentCount = (size_t)(lpHeader->mOfFragmentNo) + 1;
+            if (lPayloadSize > MAX_SUPERFRAME_SIZE / lFragmentCount) [[unlikely]] {
                 return Result::TOO_LARGE_FRAME;
             }
+            auto lTotalSize = lPayloadSize * lFragmentCount;
 
             lpBucket->mDeliveryOrder = lOrder;
             mBucketMap[lOrder] = lpBucket;
@@ -1224,10 +1249,13 @@ private:
             return Result::BUFFER_OUT_OF_RESOURCES;
         }
 
+        if (lpHeader->mStreamId != lpBucket->mStreamId ||
+            aSourceId != lpBucket->mSourceId) [[unlikely]] {
+            return Result::INVALID_PARAMETER;
+        }
+
         if (lpHeader->mOfFragmentNo != lpBucket->mOfFragmentNo ||
             lpHeader->mFragmentNo > lpBucket->mOfFragmentNo) [[unlikely]] {
-            mBucketMap.erase(lpBucket->mDeliveryOrder);
-            lpBucket->mActive = false;
             return Result::BUFFER_OUT_OF_BOUNDS;
         }
 
@@ -1263,13 +1291,22 @@ private:
 
         auto* lpHeader = (const FrameType2*)(apData);
 
-        if (aSize < sizeof(FrameType2) + lpHeader->mSizeOfData) [[unlikely]] {
+        if (aSize != sizeof(FrameType2) + lpHeader->mSizeOfData) [[unlikely]] {
             return Result::FRAME_SIZE_MISMATCH;
         }
 
         // Bounds check: ofFragmentNo must fit in bitset (8192 max)
         if (lpHeader->mOfFragmentNo >= 8192) [[unlikely]] {
             return Result::BUFFER_OUT_OF_BOUNDS;
+        }
+
+        if (lpHeader->mOfFragmentNo > 0 && lpHeader->mType1PacketSize == 0) [[unlikely]] {
+            return Result::INVALID_PARAMETER;
+        }
+
+        if (lpHeader->mDtsPtsDiff != UINT32_MAX &&
+            lpHeader->mDtsPtsDiff > lpHeader->mPts) [[unlikely]] {
+            return Result::INVALID_PARAMETER;
         }
 
         // Sanity check on total size
@@ -1340,10 +1377,18 @@ private:
             return Result::BUFFER_OUT_OF_RESOURCES;
         }
 
+        if (lpHeader->mStreamId != lpBucket->mStreamId ||
+            aSourceId != lpBucket->mSourceId) [[unlikely]] {
+            return Result::INVALID_PARAMETER;
+        }
+
         if (lpHeader->mOfFragmentNo != lpBucket->mOfFragmentNo) [[unlikely]] {
-            mBucketMap.erase(lpBucket->mDeliveryOrder);
-            lpBucket->mActive = false;
             return Result::BUFFER_OUT_OF_BOUNDS;
+        }
+
+        if (lpHeader->mOfFragmentNo > 0 &&
+            lpHeader->mType1PacketSize != lpBucket->mFragmentSize) [[unlikely]] {
+            return Result::FRAME_SIZE_MISMATCH;
         }
 
         if (lpBucket->mReceivedFragments[lpHeader->mOfFragmentNo]) [[unlikely]] {
@@ -1351,37 +1396,18 @@ private:
             return Result::DUPLICATE_FRAGMENT;
         }
 
-        lpBucket->mReceivedFragments[lpHeader->mOfFragmentNo] = true;
-        lpBucket->mFragmentCount++;
-        mStatistics.mFragmentsReceived++;
-        lpBucket->mPts = lpHeader->mPts;
-        lpBucket->mPayloadType = lpHeader->mPayloadType;
-        lpBucket->mPayloadCode = lpHeader->mPayloadCode;
-        lpBucket->mFlags = getFlags(lpHeader->mFrameType);
-        lpBucket->mType2Size = lpHeader->mSizeOfData;  // Store for potential relocation by Type3
-
-        if (lpHeader->mDtsPtsDiff == UINT32_MAX) [[unlikely]] {
-            lpBucket->mDts = UINT64_MAX;
-        } else {
-            lpBucket->mDts = lpHeader->mPts - lpHeader->mDtsPtsDiff;
-        }
-
-        // Update stream cache
-        auto* lpStream = &mStreams[lpHeader->mStreamId];
-        lpStream->mPayloadType = lpHeader->mPayloadType;
-        lpStream->mPayloadCode = lpHeader->mPayloadCode;
-
         // Set actual frame size, accounting for Type3 if present
         size_t lOffset;
+        size_t lActualSize;
         if (lpBucket->mType3Size > 0) [[unlikely]] {
             // Type3 exists: size = type1 fragments + type3 + type2
-            lpBucket->mpFrame->mSize = (lpBucket->mFragmentSize * (lpHeader->mOfFragmentNo - 1)) +
-                                       lpBucket->mType3Size + lpHeader->mSizeOfData;
+            lActualSize = (lpBucket->mFragmentSize * (lpHeader->mOfFragmentNo - 1)) +
+                          lpBucket->mType3Size + lpHeader->mSizeOfData;
             // Type2 data follows Type3 data
             lOffset = (lpBucket->mFragmentSize * (lpHeader->mOfFragmentNo - 1)) + lpBucket->mType3Size;
         } else {
             // No Type3: size = type1 fragments + type2
-            lpBucket->mpFrame->mSize = (lpBucket->mFragmentSize * lpHeader->mOfFragmentNo) + lpHeader->mSizeOfData;
+            lActualSize = (lpBucket->mFragmentSize * lpHeader->mOfFragmentNo) + lpHeader->mSizeOfData;
             lOffset = (size_t)(lpHeader->mType1PacketSize) * lpHeader->mOfFragmentNo;
         }
 
@@ -1390,6 +1416,26 @@ private:
         if (lOffset + lpHeader->mSizeOfData > lAllocatedSize) [[unlikely]] {
             return Result::BUFFER_OUT_OF_BOUNDS;
         }
+
+
+        // Commit bucket state only after every packet field and write bound has
+        // been validated. A malformed final fragment must not poison a bucket.
+        lpBucket->mReceivedFragments[lpHeader->mOfFragmentNo] = true;
+        lpBucket->mFragmentCount++;
+        mStatistics.mFragmentsReceived++;
+        lpBucket->mPts = lpHeader->mPts;
+        lpBucket->mPayloadType = lpHeader->mPayloadType;
+        lpBucket->mPayloadCode = lpHeader->mPayloadCode;
+        lpBucket->mFlags = getFlags(lpHeader->mFrameType);
+        lpBucket->mType2Size = lpHeader->mSizeOfData;
+        lpBucket->mpFrame->mSize = lActualSize;
+        lpBucket->mDts = lpHeader->mDtsPtsDiff == UINT32_MAX
+            ? UINT64_MAX
+            : lpHeader->mPts - lpHeader->mDtsPtsDiff;
+
+        auto* lpStream = &mStreams[lpHeader->mStreamId];
+        lpStream->mPayloadType = lpHeader->mPayloadType;
+        lpStream->mPayloadCode = lpHeader->mPayloadCode;
 
         std::memcpy(lpBucket->mpFrame->mpData + lOffset, apData + sizeof(FrameType2), lpHeader->mSizeOfData);
 
@@ -1482,10 +1528,18 @@ private:
             return Result::BUFFER_OUT_OF_RESOURCES;
         }
 
+        if (lpHeader->mStreamId != lpBucket->mStreamId ||
+            aSourceId != lpBucket->mSourceId) [[unlikely]] {
+            return Result::INVALID_PARAMETER;
+        }
+
         if (lpHeader->mOfFragmentNo != lpBucket->mOfFragmentNo || lFragmentNo > lpBucket->mOfFragmentNo) [[unlikely]] {
-            mBucketMap.erase(lpBucket->mDeliveryOrder);
-            lpBucket->mActive = false;
             return Result::BUFFER_OUT_OF_BOUNDS;
+        }
+
+
+        if (lpHeader->mType1PacketSize != lpBucket->mFragmentSize) [[unlikely]] {
+            return Result::FRAME_SIZE_MISMATCH;
         }
 
         if (lpBucket->mReceivedFragments[lFragmentNo]) [[unlikely]] {
@@ -1533,6 +1587,8 @@ private:
             return Result::FRAME_SIZE_MISMATCH;
         }
 
+        std::lock_guard<std::recursive_mutex> lLock(mNetMutex);
+
         auto* lpHeader = (const FrameType4*)(apData);
 
         if (lpHeader->mFrameCount == 0) [[unlikely]] {
@@ -1541,74 +1597,28 @@ private:
 
         mStatistics.mBundlesReceived++;
 
-        // Process each bundled frame
+        auto lPayloadSize = aSize - sizeof(FrameType4);
+        if (lPayloadSize % lpHeader->mFrameCount != 0) [[unlikely]] {
+            return Result::FRAME_SIZE_MISMATCH;
+        }
+
+        auto lFrameSize = lPayloadSize / lpHeader->mFrameCount;
+        if (lFrameSize < sizeof(FrameType1)) [[unlikely]] {
+            return Result::FRAME_SIZE_MISMATCH;
+        }
+
+        // Type4 deliberately bundles equal-sized Type1 fragments. Types 2 and
+        // 3 have variable lengths and are sent as standalone network packets.
         size_t lOffset = sizeof(FrameType4);
         Result lLastResult = Result::OK;
 
         for (uint8_t lI = 0; lI < lpHeader->mFrameCount; lI++) {
-            if (lOffset >= aSize) [[unlikely]] {
-                return Result::FRAME_SIZE_MISMATCH;
-            }
-
             auto lFrameType = getFrameType(apData[lOffset]);
-            size_t lFrameSize = 0;
-
-            // Determine frame size based on type
-            switch (lFrameType) {
-                case FrameType::TYPE1: {
-                    if (lOffset + sizeof(FrameType1) > aSize) [[unlikely]] {
-                        return Result::FRAME_SIZE_MISMATCH;
-                    }
-                    // Type1 frames in bundles are typically full MTU minus header
-                    // We need to calculate based on the remaining data
-                    // For Type1, the payload goes until the next frame header or end of bundle
-
-                    // Calculate remaining space for this and subsequent frames
-                    auto lRemainingSize = aSize - lOffset;
-                    auto lRemainingFrames = lpHeader->mFrameCount - lI;
-
-                    // Calculate frame size based on remaining frames
-                    if (lRemainingFrames > 1) {
-                        // Calculate approximate fragment size
-                        lFrameSize = lRemainingSize / lRemainingFrames;
-                    } else {
-                        // Last frame takes all remaining
-                        lFrameSize = lRemainingSize;
-                    }
-
-                    lLastResult = handleType1(apData + lOffset, lFrameSize, aSourceId);
-                    break;
-                }
-                case FrameType::TYPE2: {
-                    if (lOffset + sizeof(FrameType2) > aSize) [[unlikely]] {
-                        return Result::FRAME_SIZE_MISMATCH;
-                    }
-                    auto* lpType2 = (const FrameType2*)(apData + lOffset);
-                    lFrameSize = sizeof(FrameType2) + lpType2->mSizeOfData;
-                    if (lOffset + lFrameSize > aSize) [[unlikely]] {
-                        return Result::FRAME_SIZE_MISMATCH;
-                    }
-                    lLastResult = handleType2(apData + lOffset, lFrameSize, aSourceId);
-                    break;
-                }
-                case FrameType::TYPE3: {
-                    if (lOffset + sizeof(FrameType3) > aSize) [[unlikely]] {
-                        return Result::FRAME_SIZE_MISMATCH;
-                    }
-                    // Type3 size is remaining after header, similar to Type1
-                    auto lRemainingSize = aSize - lOffset;
-                    auto lRemainingFrames = lpHeader->mFrameCount - lI;
-                    if (lRemainingFrames > 1) {
-                        lFrameSize = lRemainingSize / lRemainingFrames;
-                    } else {
-                        lFrameSize = lRemainingSize;
-                    }
-                    lLastResult = handleType3(apData + lOffset, lFrameSize, aSourceId);
-                    break;
-                }
-                default:
-                    return Result::INVALID_PARAMETER;
+            if (lFrameType != FrameType::TYPE1) [[unlikely]] {
+                return Result::INVALID_PARAMETER;
             }
+
+            lLastResult = handleType1(apData + lOffset, lFrameSize, aSourceId);
 
             if (lLastResult != Result::OK && lLastResult != Result::DUPLICATE_FRAGMENT) [[unlikely]] {
                 return lLastResult;
@@ -1617,7 +1627,7 @@ private:
             lOffset += lFrameSize;
         }
 
-        return Result::OK;
+        return lOffset == aSize ? Result::OK : Result::FRAME_SIZE_MISMATCH;
     }
 
     void deliverFrame(Bucket* apBucket) {
@@ -1737,12 +1747,12 @@ private:
     ReceiverMode mMode;
 
     Bucket* mpBuckets;
-    std::map<uint64_t, Bucket*> mBucketMap;
+    std::map<int64_t, Bucket*> mBucketMap;
     Stream mStreams[256];  // All 256 stream IDs (0-255)
     mutable std::recursive_mutex mNetMutex;
 
     uint16_t mOldFrameNo = 0;
-    uint64_t mFrameNoRecalc = 0;
+    int64_t mFrameNoRecalc = 0;
     bool mFirstFrame = true;
 
     // Jitter tracking for adaptive NACK timing
@@ -1794,4 +1804,3 @@ template<typename ReceiveCallbackT, typename NackCallbackT, uint16_t BUFFER_SIZE
 #endif
 
 #endif // EFP_H
-

@@ -149,6 +149,65 @@ TEST_SUITE("Bundle (Type4)") {
         }
     }
 
+    TEST_CASE("Every sub-fragment mode respects MTU and preserves data") {
+        constexpr efp::SubFragmentMode MODES[] = {
+            efp::SubFragmentMode::SINGLE,
+            efp::SubFragmentMode::HALF,
+            efp::SubFragmentMode::QUARTER,
+            efp::SubFragmentMode::EIGHTH
+        };
+
+        for (auto lMode : MODES) {
+            std::atomic<bool> lReceived{false};
+            std::atomic<bool> lValid{true};
+            size_t lMaxPacketSize = 0;
+            const size_t FRAME_SIZE = 64 * 1024 + (size_t)(uint8_t)lMode;
+            std::vector<uint8_t> lData(FRAME_SIZE);
+            for (size_t lI = 0; lI < lData.size(); ++lI) {
+                lData[lI] = (uint8_t)((lI * 31 + 7) & 0xff);
+            }
+
+            auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr apFrame) {
+                if (apFrame->mBroken || apFrame->mSize != lData.size() ||
+                    !std::equal(lData.begin(), lData.end(), apFrame->mpData)) {
+                    lValid = false;
+                }
+                lReceived = true;
+            }, [](std::span<const uint8_t>) {}, 200);
+
+            auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aPacket, uint8_t) {
+                lMaxPacketSize = std::max(lMaxPacketSize, aPacket.size());
+                auto lResult = lReceiver.receive(aPacket);
+                CHECK((lResult == efp::Result::OK || lResult == efp::Result::DUPLICATE_FRAGMENT));
+            }, lMode);
+
+            REQUIRE(lSender.send(lData, 1, 1000, 900, 42, 1) == efp::Result::OK);
+            REQUIRE(waitFor([&]() { return lReceived.load(); }));
+            CHECK(lValid.load());
+            CHECK(lMaxPacketSize <= MTU);
+        }
+    }
+
+    TEST_CASE("Type4 rejects trailing bytes and non-Type1 members") {
+        auto lReceiver = efp::makeReceiver([](efp::SuperFramePtr) {},
+                                           [](std::span<const uint8_t>) {},
+                                           100, 0, 0, 0,
+                                           efp::ReceiverMode::RUN_TO_COMPLETION);
+
+        std::vector<uint8_t> lBadSize(sizeof(efp::FrameType4) + sizeof(efp::FrameType1) * 2 + 1);
+        auto* lpBundle = reinterpret_cast<efp::FrameType4*>(lBadSize.data());
+        lpBundle->mFrameType = efp::makeFrameTypeByte(efp::FrameType::TYPE4, 0);
+        lpBundle->mFrameCount = 2;
+        CHECK(lReceiver.receive(lBadSize) == efp::Result::FRAME_SIZE_MISMATCH);
+
+        std::vector<uint8_t> lWrongType(sizeof(efp::FrameType4) + sizeof(efp::FrameType1));
+        lpBundle = reinterpret_cast<efp::FrameType4*>(lWrongType.data());
+        lpBundle->mFrameType = efp::makeFrameTypeByte(efp::FrameType::TYPE4, 0);
+        lpBundle->mFrameCount = 1;
+        lWrongType[sizeof(efp::FrameType4)] = efp::makeFrameTypeByte(efp::FrameType::TYPE2, 0);
+        CHECK(lReceiver.receive(lWrongType) == efp::Result::INVALID_PARAMETER);
+    }
+
     // =========================================================================
     // Test Type4 bundle is correctly received and unwrapped
     // =========================================================================
@@ -286,5 +345,18 @@ TEST_SUITE("Bundle (Type4)") {
         CHECK(lStats.mRetentionBufferBytes == 0);
     }
 
-}
+    TEST_CASE("Retention byte limit is enforced during a send") {
+        constexpr size_t LIMIT = MTU * 2;
+        auto lSender = efp::makeSender(MTU, [](std::span<const uint8_t>, uint8_t) {},
+                                       efp::SubFragmentMode::SINGLE,
+                                       1000, LIMIT);
 
+        std::vector<uint8_t> lData(MTU * 20);
+        REQUIRE(lSender.send(lData, 1, 1000, 900, 42, 1) == efp::Result::OK);
+
+        auto lStats = lSender.getStatistics();
+        CHECK(lStats.mRetentionBufferBytes <= LIMIT);
+        CHECK(lStats.mRetentionBufferFragments <= 2);
+    }
+
+}

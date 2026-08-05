@@ -15,7 +15,7 @@ A lightweight, header-only C++20 library for fragmenting and reassembling data o
 │                     Elastic Frame Protocol                      │
 │  • Fragments large data    • Reassembles fragments              │
 │  • 64-bit timestamps       • Loss detection                     │
-│  • Stream multiplexing     • Minimal overhead (~0.5%)           │
+│  • Stream multiplexing     • 8-byte data-fragment header        │
 ├─────────────────────────────────────────────────────────────────┤
 │                      Transport Layer                            │
 │  (UDP, SRT, RIST, QUIC, WebRTC, TCP, Custom)                   │
@@ -26,9 +26,9 @@ A lightweight, header-only C++20 library for fragmenting and reassembling data o
 
 - **Header-only** — Single include, no library linking required
 - **Generic** — Works with any data type (media, sensors, files, RPC)
-- **Minimal overhead** — ~0.5% protocol overhead
+- **Compact framing** — 8-byte Type1 data-fragment headers; 27-byte final metadata header
 - **64-bit timestamps** — No wraparound issues (unlike MPEG-TS 33-bit)
-- **Transport agnostic** — Works over UDP, SRT, RIST, QUIC, or any transport
+- **Transport agnostic** — Works over datagram or record-preserving transports; stream transports need external packet boundaries
 - **Stream multiplexing** — Up to 256 independent streams
 - **Configurable** — Template-based buffer sizing with compile-time validation
 - **Thread-safe** — Built-in threading or run-to-completion mode
@@ -65,6 +65,8 @@ int main() {
     auto lReceiver = efp::makeReceiver([](efp::SuperFramePtr apFrame) {
         // Process received data
         process(apFrame->mpData, apFrame->mSize);
+    }, [](std::span<const uint8_t> aNack) {
+        sendNackBackToSender(aNack);
     }, 100);  // 100ms timeout
 
     // Create sender with callback (callback is required at construction time)
@@ -86,8 +88,8 @@ int main() {
 ```cmake
 include(FetchContent)
 FetchContent_Declare(efp
-        GIT_REPOSITORY https://github.com/yourorg/efp.git
-        GIT_TAG v1.0.0
+        GIT_REPOSITORY https://github.com/andersc/new-efp.git
+        GIT_TAG master
 )
 FetchContent_MakeAvailable(efp)
 
@@ -177,11 +179,16 @@ auto lReceiver = efp::makeReceiver(
         // Or directly: lSender.receiveNack(nackData);
     },
     100,  // Frame timeout in ms
-    50,   // HOL timeout in ms (0 = disabled)
+    50,   // Early incomplete-frame timeout in ms (0 = disabled)
     3,    // Max NACK retries (0 = disabled)
     0     // NACK interval (0 = adaptive based on jitter)
 );
 ```
+
+Each `Receiver` represents one sender sequence space. When a UDP server accepts
+multiple remote endpoints, keep one receiver per endpoint (for example, a
+`std::shared_ptr<Receiver>` in that client's `std::any` context). Stream IDs
+multiplex streams from one sender; they do not separate independent senders.
 
 #### NACK and Retransmission
 
@@ -189,8 +196,8 @@ The receiver automatically detects missing fragments and sends NACK (Negative Ac
 
 - **Adaptive timing**: By default (`aNackIntervalMs=0`), NACK timing adapts to network jitter
 - **Exponential backoff**: Each retry waits longer (delay doubles)
-- **Retry limit**: After `aMaxNackRetries` attempts, the frame is delivered as broken
-- **HOL blocking timeout**: If an older incomplete frame blocks newer complete frames, it's delivered after `aHolTimeoutMs`
+- **Retry limit**: No more than `aMaxNackRetries` NACK messages are emitted for a frame
+- **Early incomplete-frame timeout**: `aHolTimeoutMs` can deliver any incomplete frame before the full `aTimeoutMs`; complete frames do not wait behind older incomplete frames
 
 ```cpp
 // Example: Full sender-receiver setup with NACK support
@@ -206,16 +213,16 @@ auto lReceiver = efp::makeReceiver(
         lSender.processRetransmits();  // Flush retransmit queue
     },
     200,  // 200ms frame timeout
-    50,   // 50ms HOL timeout
+    50,   // Deliver incomplete frames after 50ms
     3,    // 3 NACK retries
     20    // 20ms fixed NACK interval (or 0 for adaptive)
 );
 ```
 
-**Sender retransmission**: When using `SubFragmentMode::SINGLE`, call `processRetransmits()` after `receiveNack()` to immediately send queued retransmissions. For bundled modes (`HALF`, `QUARTER`, `EIGHTH`), retransmits are processed automatically. You can also call `processRetransmits(n)` to limit the number of retransmissions per call for rate limiting.
+**Sender retransmission**: Call `processRetransmits()` after `receiveNack()` to send queued retransmissions immediately. Bundled modes may also interleave an equal-sized retransmit into a later Type4 packet. You can call `processRetransmits(n)` to limit work per call.
 
 **Validation**: The receiver throws `std::invalid_argument` if:
-- `aHolTimeoutMs >= aTimeoutMs` (HOL must be less than frame timeout)
+- `aHolTimeoutMs >= aTimeoutMs` (the early timeout must be less than the full frame timeout)
 - `aNackIntervalMs * aMaxNackRetries >= aTimeoutMs` (NACK budget must fit in timeout)
 
 #### Bandwidth Management (Optional)
@@ -338,21 +345,62 @@ struct ReceiverStatistics {
 };
 ```
 
+The total counters and current queue/buffer gauges are populated. The four
+`*PerSecond` fields are reserved for a future sliding-window implementation and
+currently remain zero.
+
 ## Protocol Format
 
 EFP uses 5 frame types optimized for different scenarios:
 
 | Type | Size | Purpose |
 |------|------|---------|
-| Type0 | 3B+ | Signaling (NACK, etc.) |
+| Type0 | 1B or subtype-defined | Signaling: NACK and RTT measurement |
 | Type1 | 8B | Fragment header |
 | Type2 | 27B | Final fragment with metadata |
 | Type3 | 8B | Penultimate overflow fragment |
-| Type4 | 2B | Bundle wrapper (contains multiple Type1/2/3) |
+| Type4 | 2B | Bundle wrapper containing equal-sized Type1 frames |
 
 ### Frame Structure
 
+The low four bits of the first byte select the frame type; the high four bits
+carry flags. Sizes below are packed wire-header sizes and do not include payload
+bytes. Multi-byte fields are currently copied in host byte order, so peers must
+use the same byte order (the tested x86_64 and ARM64 targets are little-endian).
+
+```text
+Type0 base (1 byte):
+┌──────────┐
+│ Type+Flg │
+│  1 byte  │
+└──────────┘
+
+Type0 NACK (3 + 6N bytes):
+┌──────────┬──────────┬───────────┬───────────────────────────┐
+│ Type+Flg │ Subtype  │ NackCount │ NackEntry × NackCount     │
+│  1 byte  │  1 byte  │  1 byte   │ 6 bytes each              │
+└──────────┴──────────┴───────────┴───────────────────────────┘
+
+NackEntry (6 bytes):
+┌──────────┬──────────────┬────────────┬───────────────┐
+│ StreamID │ SuperFrameNo │ FragmentNo │ FragmentCount │
+│  1 byte  │   2 bytes    │  2 bytes   │    1 byte     │
+└──────────┴──────────────┴────────────┴───────────────┘
+
+Type0 RTT probe (12 bytes):
+┌──────────┬──────────┬────────────┬─────────────┐
+│ Type+Flg │ Subtype  │ SequenceNo │ TimestampUs │
+│  1 byte  │  1 byte  │  2 bytes   │   8 bytes   │
+└──────────┴──────────┴────────────┴─────────────┘
+
+Type0 RTT response (20 bytes):
+┌──────────┬──────────┬────────────┬─────────────┬────────────────┐
+│ Type+Flg │ Subtype  │ SequenceNo │ TimestampUs │ ReceiverTimeUs │
+│  1 byte  │  1 byte  │  2 bytes   │   8 bytes   │    8 bytes     │
+└──────────┴──────────┴────────────┴─────────────┴────────────────┘
 ```
+
+```text
 Type1 (8 bytes):
 ┌──────────┬──────────┬──────────────┬────────────┬──────────────┐
 │ Type+Flg │ StreamID │ SuperFrameNo │ FragmentNo │ OfFragmentNo │
@@ -367,7 +415,34 @@ Type2 (27 bytes):
 │ OfFragmentNo │ Type1PktSize  │   PTS    │ DtsPtsDiff │  Code  │
 │   2 bytes    │    2 bytes    │ 8 bytes  │  4 bytes   │ 4 bytes│
 └──────────────┴───────────────┴──────────┴────────────┴────────┘
+
+Type3 (8 bytes):
+┌──────────┬──────────┬──────────────┬──────────────┬──────────────┐
+│ Type+Flg │ StreamID │ SuperFrameNo │ Type1PktSize │ OfFragmentNo │
+│  1 byte  │  1 byte  │   2 bytes    │   2 bytes    │   2 bytes    │
+└──────────┴──────────┴──────────────┴──────────────┴──────────────┘
+
+Type4 (2 bytes + equal-sized Type1 frames):
+┌──────────┬────────────┬──────────────────────────────────────────┐
+│ Type+Flg │ FrameCount │ Type1 frame × FrameCount                 │
+│  1 byte  │   1 byte   │ equal-sized; wrapper total ≤ sender MTU │
+└──────────┴────────────┴──────────────────────────────────────────┘
 ```
+
+Type1 carries ordinary non-final fragments. Type2 is both the final fragment
+and the complete representation of a small one-packet SuperFrame. Type3 is used
+only when data immediately before Type2 cannot fill a regular Type1 fragment.
+Type4 bundles only equal-sized Type1 frames; Type2 and Type3 remain standalone.
+The sender's `aMtu` is the maximum size passed to its send callback, making it a
+natural UDP-payload ceiling. EFP does not add UDP/IP headers.
+
+A SuperFrame is limited to 100 MiB and 8192 fragments. The fragment limit can
+become the effective limit first in bundled modes because their Type1 payloads
+are intentionally smaller.
+
+EFP expects one complete EFP packet per `receive()` call. UDP already preserves
+those boundaries. TCP and other byte-stream transports must add an outer length
+prefix or another record-framing mechanism before feeding packets to EFP.
 
 ## Configuration
 
@@ -397,11 +472,15 @@ efp::Sender<MySendCallback, 1000> lSender(1400, cb);  // ERROR: not 2^n - 1
 ### Receiver Modes
 
 ```cpp
-// Threaded mode (default): Background threads handle assembly
-auto lReceiver = efp::makeReceiver(callback, 100, 0, efp::ReceiverMode::THREADED);
+auto lNackCallback = [](std::span<const uint8_t> nack) { sendNack(nack); };
 
-// Run-to-completion: No threads, caller drives processing
-auto lReceiver = efp::makeReceiver(callback, 100, 0, efp::ReceiverMode::RUN_TO_COMPLETION);
+// Threaded mode (default): background threads handle timeout and delivery work
+auto lReceiver = efp::makeReceiver(callback, lNackCallback,
+    100, 0, 3, 0, efp::ReceiverMode::THREADED);
+
+// Run-to-completion: no threads; caller drives timeout and NACK work
+auto lReceiver = efp::makeReceiver(callback, lNackCallback,
+    100, 0, 3, 0, efp::ReceiverMode::RUN_TO_COMPLETION);
 lReceiver.poll();  // Must call periodically
 ```
 
@@ -481,79 +560,6 @@ The project passes clang-tidy with the recommended "Quick Code Quality Check" co
 ## License
 
 MIT License - See [LICENSE](LICENSE) for details.
-
-## Changelog
-
-### v1.2.0 - Bandwidth Management
-
-**New Features:**
-- **BandwidthManager class** — Congestion-aware streaming wrapper with per-stream bandwidth controls
-- **Hybrid congestion detection** — Combines delay-based (jitter) and NACK-based detection
-- **Per-stream policies** — Configure min/max multipliers, drop behavior, and priorities per stream
-- **RTT probing** — New Type0 subtypes (RTT_PROBE=0x02, RTT_RESPONSE=0x03) for bandwidth restoration
-- **AIMD algorithm** — Additive Increase, Multiplicative Decrease for bandwidth adaptation
-- **`makeBandwidthManager()` factory** — Creates BandwidthManager with automatic type deduction
-
-**New Files:**
-- `bandwidth_manager.h` — BandwidthManager class implementation
-
-**Internal Changes:**
-- Added `FrameType0RttProbe` (12 bytes) and `FrameType0RttResponse` (20 bytes) structures
-- Extended `Type0Subtype` enum with `RTT_PROBE` and `RTT_RESPONSE`
-
-### v1.1.0 - Template-Based Callbacks
-
-**Breaking Changes:**
-- **Callbacks are now required at construction time** — Removed `setCallback()` method; callbacks must be passed to constructor
-- **Template-based callback types** — Sender and Receiver are now templated on the callback type for zero-overhead function calls
-- **`std::span` for send callbacks** — Send callback signature changed from `(const uint8_t*, size_t, uint8_t)` to `(std::span<const uint8_t>, uint8_t)`
-
-**New Features:**
-- **`makeSender()` factory function** — Creates Sender with automatic callback type deduction
-- **`makeReceiver()` factory function** — Creates Receiver with automatic callback type deduction
-- **Zero-overhead callbacks** — Template-based callbacks are inlined by compiler (no std::function overhead)
-
-**Migration Guide:**
-```cpp
-// Old API (removed):
-efp::Sender lSender(1400);
-lSender.setCallback([](const uint8_t* data, size_t size, uint8_t stream) { ... });
-
-// New API:
-auto lSender = efp::makeSender(1400, [](std::span<const uint8_t> data, uint8_t stream) { ... });
-```
-
-### Previous Changes
-
-- **Removed**: `mPriority` field from `RetransmitRequest` struct - it was unused and priority-based scheduling belongs in application layer (BandwidthManager), not EFP core. The `mDeadlineUs` field already provides time-sensitive prioritization
-- **Fixed**: clang-tidy warnings - implicit bool conversions now use explicit nullptr/comparison checks
-- **Fixed**: Unused variables removed (`lDataOffset`, `lpType1`, `lNextOffset`)
-- **Fixed**: Unused includes removed (`<cstddef>`, `<type_traits>`)
-- **Fixed**: Empty conditional branches removed in bundle fragment handling
-- **Fixed**: Designated initializers used for `SendCallbackWrapper` initialization
-- **Fixed**: Unnecessary null pointer check before delete removed
-- **Fixed**: Conditional with identical branches in `efp_sender_set_callback`
-- **Fixed**: Buffer overflow in `sendFragmented()` when frame data perfectly fits into Type1 fragments but Type1 payload size exceeds Type2 max payload (Type2 has larger header). Now correctly uses Type3 to handle the overflow case
-- **Fixed**: Buffer overflow in `handleType3()` when receiving malformed/garbage packets with oversized payloads. Added bounds check to reject Type3 payloads larger than `mType1PacketSize`
-- **Fixed**: Critical heap corruption in `handleType3()` - when Type3 arrives first, the frame buffer was allocated with wrong size (only accounting for Type3 payload, not Type2). This caused buffer overflow when Type2 data was later copied. Now allocates using upper bound: `mType1PacketSize * (mOfFragmentNo + 1)`
-- **Fixed**: "Receiver statistics track duplicate fragments" test now uses multi-fragment frame (single-fragment frames complete immediately so duplicate detection doesn't apply)
-- **Fixed**: Dangling span reference in test_nack.cpp causing Linux memory corruption (SEGFAULT/SIGABRT) - callback now copies data instead of storing span
-- **Fixed**: Missing `<array>` include in test_stress.cpp causing Windows MSVC compilation error
-- **Fixed**: Race condition in "Graceful shutdown under load" test - now properly waits for at least one frame to be sent before stopping
-- **Fixed**: Bundle buffer size calculation in Sender to account for interleaved retransmit fragments preventing buffer overflow
-- **Fixed**: uint16_t to uint8_t truncation warnings (C4244) in buildNack() with explicit casts
-- **Improved**: Test data integrity verification - tests now fill payloads with distinctive patterns and verify content arrives correctly:
-  - `test_lifecycle.cpp`: "Stop and restart sender" now verifies sequential byte content
-  - `test_integration.cpp`: "Send and receive multiple frames sequentially" now verifies payload size and content per frame
-  - `test_edge_cases.cpp`: "All 256 stream IDs work" now fills each stream's payload with its stream ID and verifies on receive
-  - `test_c_api.cpp`: "New API test" now has proper loopback and content verification
-- **Fixed**: Critical bug in `recalculateSuperFrameNo()` where signed int16 subtraction could overflow at frame 32768, causing frames 32768-65535+ to be rejected as "too old" when using buffer sizes ≥32768
-- **Fixed**: Test name "Send 100000 superframes" now correctly reflects it sends 50000 superframes
-- **Fixed**: Test "Send 1000000 small frames (endurance)" now actually sends 1 million frames as intended
-- **Added**: `pendingCount()` method to Receiver for debugging/diagnostics
-- **Fixed**: `efp_sender_set_callback` in C API hardcoded MTU to 1456, discarding the MTU passed to `efp_sender_create`. Also affected the legacy `efp_init_send` API. Now stores and reuses the original MTU
-- **Fixed**: Stale `mType3Size`/`mType2Size` in receiver bucket reuse. When a bucket slot was reused for a new superframe, leftover values from the previous occupant caused incorrect data offset and frame size calculations, leading to potential data corruption
-- **Fixed**: Bundle sender (`sendFragmentedBundled`) mixed Type1, Type3, and Type2 frames of different sizes in the same Type4 bundle. The receiver uses equal-division to determine frame boundaries within a bundle, which fails for mixed sizes. Type3 and Type2 are now sent individually outside of bundles
 
 ## Credits
 
