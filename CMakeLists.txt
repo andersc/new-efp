@@ -160,6 +160,7 @@ if(EFP_BUILD_NETWORK_EXAMPLES)
     target_include_directories(efp_networkif PUBLIC ${net_tools_SOURCE_DIR})
     target_link_libraries(efp_networkif PUBLIC Threads::Threads)
     if(WIN32)
+        target_compile_definitions(efp_networkif PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
         target_link_libraries(efp_networkif PUBLIC ws2_32 iphlpapi)
     endif()
 

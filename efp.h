@@ -684,7 +684,7 @@ private:
                 FrameType4 lBundleHeader;
                 lBundleHeader.mFrameType = makeFrameTypeByte(FrameType::TYPE4, aFlags);
 
-                auto lFragsInBundle = std::min((size_t)(aBundleSize), aNumType1Fragments - lFragIdx);
+                auto lFragsInBundle = (std::min)((size_t)(aBundleSize), aNumType1Fragments - lFragIdx);
 
                 // Only equal-sized Type1 retransmits can be placed in this bundle.
                 std::vector<uint8_t> lRetransmitData;
@@ -1021,7 +1021,7 @@ private:
             lBaseDelayUs = (int64_t)(mNackIntervalMs) * 1000;
         } else {
             // Adaptive: use 4x jitter estimate, minimum 10ms
-            lBaseDelayUs = std::max((int64_t)(10000), mJitterUs * 4);
+            lBaseDelayUs = (std::max)((int64_t)(10000), mJitterUs * 4);
         }
 
         // Apply exponential backoff based on retry count
@@ -1031,7 +1031,7 @@ private:
         auto lRemainingUs = apBucket->mTimeoutUs - nowUs() - 10000;
         if (lRemainingUs < 0) lRemainingUs = 0;
 
-        return std::min(lBackoffDelayUs, lRemainingUs);
+        return (std::min)(lBackoffDelayUs, lRemainingUs);
     }
 
     // Build NACK message for missing fragments in a bucket

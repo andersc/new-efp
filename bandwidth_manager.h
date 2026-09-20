@@ -502,7 +502,7 @@ private:
                 if (mManualMultiplier[lI] < 0) {  // Only if not manually set
                     auto lTarget = getTargetMultiplier((uint8_t)(lI), aNewHealth);
                     auto lNewMult = mCurrentMultipliers[lI] + mConfig.mAdditiveIncrease;
-                    lNewMult = std::min(lNewMult, lTarget);
+                    lNewMult = (std::min)(lNewMult, lTarget);
                     lNewMult = std::clamp(lNewMult, mStreamConfigs[lI].mMinMultiplier,
                                           mStreamConfigs[lI].mMaxMultiplier);
 
@@ -562,7 +562,7 @@ private:
                 if (mManualMultiplier[lI] < 0) {  // Only if not manually set
                     auto lTarget = getTargetMultiplier((uint8_t)(lI), mCurrentHealth);
                     auto lNewMult = mCurrentMultipliers[lI] + mConfig.mAdditiveIncrease;
-                    lNewMult = std::min(lNewMult, lTarget);
+                    lNewMult = (std::min)(lNewMult, lTarget);
                     lNewMult = std::clamp(lNewMult, mStreamConfigs[lI].mMinMultiplier,
                                           mStreamConfigs[lI].mMaxMultiplier);
 
