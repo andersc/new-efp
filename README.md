@@ -104,6 +104,23 @@ Copy `efp.h`, `efp_internal.h`, and optionally `efp_media_types.h` to your proje
 #include "efp.h"
 ```
 
+### Network example
+
+`efp_udp_loopback` demonstrates real UDP transport through
+[`net-tools`](https://github.com/andersc/net-tools). This dependency is optional,
+loaded by CMake only when requested, and pinned to the commit behind `v1.0.1`.
+It does not become part of EFP's public interface or installed package.
+
+```bash
+cmake -S . -B build -DEFP_BUILD_NETWORK_EXAMPLES=ON
+cmake --build build --target efp_udp_loopback
+./build/efp_udp_loopback
+```
+
+The example preserves one UDP datagram per EFP packet and uses a reverse UDP
+path for NACKs. `MTU` is the UDP payload limit supplied to EFP, not a guarantee
+about path MTU. TCP transports require an additional packet framing layer.
+
 ## API Reference
 
 ### Sender

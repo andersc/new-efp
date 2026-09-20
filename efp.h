@@ -942,15 +942,20 @@ public:
 
     // Stop receiver threads
     void stop() {
-        auto lExpected = true;
-        if (!mRunning.compare_exchange_strong(lExpected, false)) {
-            return;  // Already stopped or not started
+        {
+            // Change the wait predicate while holding the same mutex used by
+            // deliveryLoop(). This prevents notification from racing between
+            // the predicate check and condition-variable wait.
+            std::lock_guard<std::mutex> lLock(mDeliveryMutex);
+            auto lExpected = true;
+            if (!mRunning.compare_exchange_strong(lExpected, false)) {
+                return;  // Already stopped or not started
+            }
         }
 
-        // Signal stop via atomic bool (threads check mRunning)
         mDeliveryCondition.notify_all();
 
-        // Join threads
+        // Never hold mDeliveryMutex while joining: deliveryLoop needs it to exit.
         if (mWorkerThread.joinable()) {
             mWorkerThread.join();
         }

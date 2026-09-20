@@ -284,6 +284,64 @@ TEST_SUITE("Lifecycle") {
     }
 
     // =========================================================================
+    // Repeated idle shutdown exercises delivery-thread wait synchronization
+    // =========================================================================
+    TEST_CASE("Repeated idle receiver shutdown" * doctest::timeout(30)) {
+        for (int lIter = 0; lIter < 1000; lIter++) {
+            auto lReceiver = efp::makeReceiver(
+                [](efp::SuperFramePtr) {},
+                [](std::span<const uint8_t>) {},
+                50, 0);
+            lReceiver.stop();
+        }
+
+        CHECK(true);
+    }
+
+    // =========================================================================
+    // Repeated active shutdown exercises queued delivery and stop races
+    // =========================================================================
+    TEST_CASE("Repeated active receiver shutdown" * doctest::timeout(30)) {
+        std::vector<uint8_t> lPayload(100);
+
+        for (int lIter = 0; lIter < 250; lIter++) {
+            std::atomic<size_t> lReceived{0};
+            std::atomic<bool> lCallbackEntered{false};
+            std::atomic<bool> lReleaseCallback{false};
+            auto lReceiver = efp::makeReceiver([&](efp::SuperFramePtr) {
+                lReceived++;
+                lCallbackEntered = true;
+                while (!lReleaseCallback.load()) {
+                    std::this_thread::yield();
+                }
+            }, [](std::span<const uint8_t>) {}, 50, 0);
+
+            auto lSender = efp::makeSender(MTU, [&](std::span<const uint8_t> aData, uint8_t) {
+                (void)lReceiver.receive(aData, 0);
+            });
+
+            // Block delivery of the first frame, then queue more work. stop() must
+            // wake and join the delivery thread without promising to drain the queue.
+            (void)lSender.send(lPayload, 0x01, 0, 0, 0, 1);
+            REQUIRE(waitFor([&]() { return lCallbackEntered.load(); },
+                            std::chrono::milliseconds(500)));
+            for (int lFrame = 1; lFrame < 10; lFrame++) {
+                (void)lSender.send(lPayload, 0x01, lFrame, lFrame, 0, 1);
+            }
+
+            std::thread lReleaseThread([&]() {
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                lReleaseCallback = true;
+            });
+            lReceiver.stop();
+            lReleaseThread.join();
+
+            CHECK(lReceived.load() >= 1);
+            CHECK(lReceived.load() <= 10);
+        }
+    }
+
+    // =========================================================================
     // Receiver stop is idempotent
     // =========================================================================
     TEST_CASE("Receiver stop is idempotent") {

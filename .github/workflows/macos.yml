@@ -24,6 +24,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
             -DEFP_BUILD_TESTS=ON \
             -DEFP_BUILD_EXAMPLES=ON \
+            -DEFP_BUILD_NETWORK_EXAMPLES=ON \
             -DEFP_BUILD_C_API=ON
 
       - name: Build

@@ -15,6 +15,7 @@ set(CMAKE_C_STANDARD 11)
 # Options
 option(EFP_BUILD_TESTS "Build unit tests" ON)
 option(EFP_BUILD_EXAMPLES "Build examples" ON)
+option(EFP_BUILD_NETWORK_EXAMPLES "Build examples using net-tools UDP transport" OFF)
 option(EFP_BUILD_C_API "Build C API library" ON)
 
 # Test timeout for stress tests (default 5 minutes)
@@ -99,10 +100,13 @@ if(EFP_BUILD_TESTS)
 
     # CTest integration
     include(${doctest_SOURCE_DIR}/scripts/cmake/doctest.cmake)
-    doctest_discover_tests(efp_tests)
+    doctest_discover_tests(efp_tests
+        PROPERTIES TIMEOUT ${EFP_TEST_TIMEOUT}
+    )
 
     if(EFP_BUILD_C_API)
         add_test(NAME efp_c_api_tests COMMAND efp_c_tests)
+        set_tests_properties(efp_c_api_tests PROPERTIES TIMEOUT ${EFP_TEST_TIMEOUT})
     endif()
 endif()
 
@@ -116,6 +120,51 @@ if(EFP_BUILD_EXAMPLES)
         add_executable(efp_c_example examples/c_api_example.cpp)
         target_link_libraries(efp_c_example PRIVATE efp_c_api)
     endif()
+endif()
+
+# Optional real-network example. Fetch only net-tools sources needed by NetworkIF,
+# avoiding its tests and demo targets when EFP is consumed as a subproject.
+if(EFP_BUILD_NETWORK_EXAMPLES)
+    include(FetchContent)
+    FetchContent_Declare(
+        net_tools
+        GIT_REPOSITORY https://github.com/andersc/net-tools.git
+        # net-tools v1.0.1
+        GIT_TAG 06df4df0244ca8704be5ef5d50a13a8a4871c087
+        GIT_SHALLOW FALSE
+    )
+    FetchContent_GetProperties(net_tools)
+    if(NOT net_tools_POPULATED)
+        # Direct population keeps net-tools' own demos/tests out of EFP's build.
+        # CMP0169 is needed only by newer CMake; older supported versions do not know it.
+        if(POLICY CMP0169)
+            cmake_policy(PUSH)
+            cmake_policy(SET CMP0169 OLD)
+        endif()
+        FetchContent_Populate(net_tools)
+        if(POLICY CMP0169)
+            cmake_policy(POP)
+        endif()
+    endif()
+
+    add_library(efp_networkif STATIC
+        ${net_tools_SOURCE_DIR}/NetworkIF.cpp
+        ${net_tools_SOURCE_DIR}/NetworkAddress.cpp
+        ${net_tools_SOURCE_DIR}/NetworkRuntime.cpp
+        ${net_tools_SOURCE_DIR}/SocketPlatform.cpp
+        ${net_tools_SOURCE_DIR}/NameResolver.cpp
+        ${net_tools_SOURCE_DIR}/NetworkInterfaces.cpp
+        ${net_tools_SOURCE_DIR}/TcpProbe.cpp
+        ${net_tools_SOURCE_DIR}/RouteInspector.cpp
+    )
+    target_include_directories(efp_networkif PUBLIC ${net_tools_SOURCE_DIR})
+    target_link_libraries(efp_networkif PUBLIC Threads::Threads)
+    if(WIN32)
+        target_link_libraries(efp_networkif PUBLIC ws2_32 iphlpapi)
+    endif()
+
+    add_executable(efp_udp_loopback examples/udp_loopback.cpp)
+    target_link_libraries(efp_udp_loopback PRIVATE efp efp_networkif)
 endif()
 
 # Installation

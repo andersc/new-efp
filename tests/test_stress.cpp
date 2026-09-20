@@ -339,10 +339,9 @@ TEST_SUITE("Stress Tests") {
                 (void)lSender.send(lPayload, 0x01, lI, lI, 0, 1);
             }
 
-            waitFor([&]() { return lReceived.load() == 10; }, std::chrono::milliseconds(500));
+            REQUIRE(waitFor([&]() { return lReceived.load() == 10; },
+                            std::chrono::milliseconds(500)));
         }
-
-        CHECK(true);
     }
 
     // =========================================================================
